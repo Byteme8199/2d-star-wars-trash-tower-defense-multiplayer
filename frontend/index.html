@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Star Wars Tower Defense</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+            color: #fff;
+            overflow: hidden;
+        }
+        #game-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        canvas {
+            border: 2px solid #ffd700;
+        }
+        #ui-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        #tower-panel {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            display: flex;
+            gap: 10px;
+        }
+        .tower-button {
+            background: #333;
+            border: 1px solid #ffd700;
+            color: #fff;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        .tower-button:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+    <div id="ui-overlay">
+        <div>Health: <span id="health">100</span></div>
+        <div>Wave: <span id="wave">1</span></div>
+        <div>Score: <span id="score">0</span></div>
+    </div>
+    <div id="tower-panel">
+        <button class="tower-button" id="tower1">Tower 1</button>
+        <button class="tower-button" id="tower2">Tower 2</button>
+        <button class="tower-button" id="tower3">Tower 3</button>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>

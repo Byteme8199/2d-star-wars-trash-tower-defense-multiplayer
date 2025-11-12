@@ -1,0 +1,22 @@
+{
+  "name": "2d-star-wars-trash-tower-defense-multiplayer",
+  "version": "1.0.0",
+  "description": "A multiplayer web-based tower defense game themed around Star Wars.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm start --prefix frontend\" \"npm start --prefix backend\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
