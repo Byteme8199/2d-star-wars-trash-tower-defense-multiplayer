@@ -28,6 +28,7 @@ We'll use a mono-repo structure for simplicity:
 
 1. Install dependencies: Run `npm install` in the root directory, then `npm install` in `/frontend` and `/backend`.
 2. Start the development servers: Run `npm run dev` from the root directory to start both frontend (on port 8080) and backend simultaneously.
+3. Test the frontend: Run `node frontend/server.js` to start the frontend server, then open `http://localhost:8080` in your browser to see the basic game UI with Phaser canvas, health/wave/score display, and tower selection buttons.
 
 ## To-Do List
 

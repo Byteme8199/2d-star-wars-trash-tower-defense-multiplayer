@@ -20,8 +20,21 @@
             justify-content: center;
             align-items: center;
         }
-        canvas {
-            border: 2px solid #ffd700;
+        #login-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            z-index: 10;
+        }
+        #login-container input, #login-container button {
+            display: block;
+            margin: 10px auto;
+            padding: 5px;
         }
         #ui-overlay {
             position: absolute;
@@ -49,25 +62,100 @@
             padding: 5px 10px;
             cursor: pointer;
         }
-        .tower-button:hover {
+        #nav {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #nav button {
+            background: #333;
+            border: 1px solid #ffd700;
+            color: #fff;
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        #nav button:hover {
             background: #555;
+        }
+        #locker-room {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            z-index: 10;
+            color: white;
+        }
+        #locker-room select, #locker-room button {
+            margin: 10px;
+            padding: 5px;
         }
     </style>
 </head>
 <body>
-    <div id="game-container"></div>
+    <div id="login-container">
+        <h2>Login to Coruscant Sewage Defense</h2>
+        <input type="text" id="username" placeholder="Username">
+        <input type="password" id="password" placeholder="Password">
+        <button id="login-btn">Login</button>
+        <button id="register-btn">Register</button>
+        <p id="message"></p>
+    </div>
+    <div id="nav" style="display: none;">
+        <div id="account-info">
+            <span id="nav-username"></span> | Scrap: <span id="nav-scrap"></span> | Unlocks: <span id="nav-unlocks"></span>
+        </div>
+        <button id="locker-btn">Locker Room</button>
+        <button id="logout-btn">Logout</button>
+    </div>
+    <div id="locker-room" style="display: none;">
+        <h2>Locker Room - Prepare Your Shift</h2>
+        <div id="shift-code">Shift Code: <span id="code">Generating...</span></div>
+        <div id="join-section">
+            <input type="text" id="join-code" placeholder="Enter Shift Code to Join">
+            <button id="join-shift-btn">Join Shift</button>
+        </div>
+        <div id="player-list">Players: <span id="players">You</span></div>
+        <div id="loadout">
+            <h3>Select Weapons</h3>
+            <select id="weapon-select">
+                <option value="pressure-washer">Pressure Washer</option>
+                <option value="laser-cutter">Laser Cutter</option>
+                <option value="waste-escape-pod">Waste Escape Pod</option>
+            </select>
+            <button id="add-weapon">Add to Loadout</button>
+            <div id="selected-weapons"></div>
+        </div>
+        <div id="chat" style="display: none;">
+            <h3>Chat</h3>
+            <div id="chat-messages" style="height: 100px; overflow-y: scroll; border: 1px solid #fff; padding: 5px; margin-bottom: 5px;"></div>
+            <input type="text" id="chat-input" placeholder="Type a message..." style="width: 70%; text-align: left;" maxlength="255">
+            <button id="send-chat">Send</button>
+        </div>
+        <button id="start-shift">I'm Ready</button>
+    </div>
     <div id="ui-overlay">
-        <div>Health: <span id="health">100</span></div>
+        <div>Overflow: <span id="overflow">100</span></div>
         <div>Wave: <span id="wave">1</span></div>
-        <div>Score: <span id="score">0</span></div>
+        <div>Scrap: <span id="scrap">0</span></div>
     </div>
     <div id="tower-panel">
-        <button class="tower-button" id="tower1">Tower 1</button>
-        <button class="tower-button" id="tower2">Tower 2</button>
-        <button class="tower-button" id="tower3">Tower 3</button>
+        <button class="tower-button" id="weapon1">Pressure Washer</button>
+        <button class="tower-button" id="weapon2">Laser Cutter</button>
+        <button class="tower-button" id="weapon3">Waste Escape Pod</button>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
     <script src="main.js"></script>
 </body>
 </html>
