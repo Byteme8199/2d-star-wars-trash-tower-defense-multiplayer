@@ -108,6 +108,7 @@
             cursor: pointer;
             position: relative;
             vertical-align: top;
+            color: white;
         }
         .toolbelt-slot.selected, .game-toolbelt-slot.selected {
             border-color: red;
@@ -122,14 +123,15 @@
         <input type="password" id="password" placeholder="Password">
         <button id="login-btn">Login</button>
         <button id="register-btn">Register</button>
-        <p id="message"></p>
     </div>
+    <p id="message" style="text-align: center; color: red;"></p>
     <div id="nav" style="display: none;">
         <div id="account-info">
-            <span id="nav-username"></span> | Scrap: <span id="nav-scrap"></span> | Unlocks: <span id="nav-unlocks"></span>
+            <span id="nav-username"></span> 
+            <!-- | Scrap: <span id="nav-scrap"></span> | Unlocks: <span id="nav-unlocks"></span> -->
         </div>
-        <button id="toggle-boosts">Show Boosts</button>
-        <button id="locker-btn">Locker Room</button>
+        <button id="toggle-boosts" style="display: none;">Show Boosts</button>
+        <!-- <button id="locker-btn">Locker Room</button> -->
         <button id="logout-btn">Logout</button>
     </div>
     <div id="locker-room" style="display: none;">

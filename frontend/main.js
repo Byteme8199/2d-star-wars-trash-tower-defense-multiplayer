@@ -425,6 +425,7 @@ function populateToolbelt() {
     console.error('toolbelt-slots element not found');
     return;
   }
+  toolbeltSlots.innerHTML = '';
   let toolbelt = currentUser.toolbelt || [];
   if (toolbelt.length === 0) {
     toolbelt = ['pressure-washer'];
