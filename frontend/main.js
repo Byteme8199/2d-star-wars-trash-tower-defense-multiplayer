@@ -588,7 +588,7 @@ class GameScene extends Phaser.Scene {
 
     preload() {
         // Load assets here (e.g., this.load.image('tower', 'assets/tower.png');)
-        // For now, no assets loaded
+        this.load.image('conveyor-belt', 'assets/conveyor-belt.gif');
     }
 
     create() {
@@ -606,6 +606,9 @@ class GameScene extends Phaser.Scene {
 
         // Graphics for path
         this.graphics = this.add.graphics();
+
+        // Path sprites group
+        this.pathSprites = this.add.group();
 
         // Graphics for grid
         this.gridGraphics = this.add.graphics();
@@ -726,10 +729,11 @@ class GameScene extends Phaser.Scene {
         if (shift.map && !this.enemyPath) {
             this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
             // Draw path
-            this.graphics.clear();
-            this.graphics.fillStyle(0x00ff00);
+            this.pathSprites.clear(true, true);
             shift.map.pathSquares.forEach(square => {
-                this.graphics.fillRect(square.x * this.cellSize, square.y * this.cellSize, this.cellSize, this.cellSize);
+                const sprite = this.add.image(square.x * this.cellSize + 5, square.y * this.cellSize + 5, 'conveyor-belt');
+                sprite.setDisplaySize(this.cellSize, this.cellSize);
+                this.pathSprites.add(sprite);
             });
             // Create enemy path
             this.enemyPath = new Phaser.Curves.Path(shift.map.startPos.x * this.cellSize + 5, shift.map.startPos.y * this.cellSize + 5);
