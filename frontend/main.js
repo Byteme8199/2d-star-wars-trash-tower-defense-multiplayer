@@ -1,10 +1,22 @@
-console.log('main.js loaded');
-let currentUser = null;
-let gameInstance = null;
-let socket = null;
-let currentShiftId = null;
-let previousPlayers = [];
-let selectedIndex = 0;
+// Helper function to get or create message element
+function getMessageElement() {
+  let messageEl = document.getElementById('message');
+  if (!messageEl) {
+    messageEl = document.createElement('p');
+    messageEl.id = 'message';
+    messageEl.style.textAlign = 'center';
+    messageEl.style.color = 'red';
+    document.body.insertBefore(messageEl, document.getElementById('nav'));
+  }
+  return messageEl;
+}
+
+var currentUser = null;
+var gameInstance = null;
+var socket = null;
+var currentShiftId = null;
+var previousPlayers = [];
+var selectedIndex = 0;
 
 const WEAPON_GRID_SIZES = {
   'pressure-washer': {w:1,h:1},
@@ -24,6 +36,9 @@ window.addEventListener('load', async () => {
       const data = await res.json();
       if (res.ok) {
         currentUser = data.user;
+        if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
+          currentUser.toolbelt = ['pressure-washer'];
+        }
         document.getElementById('login-container').style.display = 'none';
         document.getElementById('nav').style.display = 'flex';
         document.getElementById('locker-room').style.display = 'block';
@@ -147,13 +162,16 @@ document.getElementById('login-btn').addEventListener('click', async () => {
     const data = await res.json();
     if (res.ok) {
       currentUser = data.user;
+      if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
+        currentUser.toolbelt = ['pressure-washer'];
+      }
       localStorage.setItem('token', data.token);
       document.getElementById('login-container').style.display = 'none';
       document.getElementById('nav').style.display = 'flex';
       document.getElementById('locker-room').style.display = 'block';
       document.getElementById('nav-username').textContent = currentUser.username;
-      document.getElementById('nav-scrap').textContent = currentUser.scrap;
-      document.getElementById('nav-unlocks').textContent = currentUser.unlocks.join(', ');
+    //   document.getElementById('nav-scrap').textContent = currentUser.scrap;
+    //   document.getElementById('nav-unlocks').textContent = currentUser.unlocks.join(', ');
       socket = io('http://localhost:3001');
       // Set up socket listeners
       socket.on('shift-update', (shift) => {
@@ -243,11 +261,13 @@ document.getElementById('login-btn').addEventListener('click', async () => {
         previousPlayers = [{ userId: currentUser._id, username: currentUser.username }];
       }).catch(err => console.error('Create shift error:', err));
     } else {
-      document.getElementById('message').textContent = data.message;
+      const messageEl = getMessageElement();
+      messageEl.textContent = data.message;
     }
   } catch (error) {
     console.error('Login error:', error);
-    document.getElementById('message').textContent = 'Login failed: ' + error.message;
+    const messageEl = getMessageElement();
+    messageEl.textContent = 'Login failed: ' + error.message;
   }
 });
 
@@ -260,7 +280,8 @@ document.getElementById('register-btn').addEventListener('click', async () => {
     body: JSON.stringify({ username, password })
   });
   const data = await res.json();
-  document.getElementById('message').textContent = data.message;
+  const messageEl = getMessageElement();
+  messageEl.textContent = data.message;
 });
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
@@ -269,21 +290,34 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId: currentUser._id })
   });
-  document.getElementById('nav').style.display = 'none';
+  // Reset all UI elements to initial state
   document.getElementById('login-container').style.display = 'block';
+  document.getElementById('nav').style.display = 'none';
+  document.getElementById('locker-room').style.display = 'none';
+  document.getElementById('ui-overlay').style.display = 'none';
+  document.getElementById('tower-panel').style.display = 'none';
+  document.getElementById('item-modal').style.display = 'none';
+  document.getElementById('boost-modal').style.display = 'none';
+  document.getElementById('show-boosts-modal').style.display = 'none';
+  document.getElementById('game-container').style.display = 'none';
+  document.getElementById('toolbelt-ui').style.display = 'none';
+  // Clear message
+  getMessageElement().textContent = '';
+  // Destroy game instance
   if (gameInstance) {
     gameInstance.destroy(true);
     gameInstance = null;
   }
+  // Reset variables
   currentUser = null;
+  currentShiftId = null;
+  previousPlayers = [];
+  selectedIndex = 0;
   localStorage.removeItem('token');
-  socket.disconnect();
-});
-
-document.getElementById('locker-btn').addEventListener('click', () => {
-  document.getElementById('locker-room').style.display = 'block';
-  document.getElementById('toolbelt-ui').style.display = 'none';
-  populateToolbelt();
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
 });
 
 document.getElementById('send-chat').addEventListener('click', () => {
@@ -366,6 +400,10 @@ document.getElementById('close-boosts-modal').addEventListener('click', () => {
 
 function populateToolbelt() {
   const inventoryItems = document.getElementById('inventory-items');
+  if (!inventoryItems) {
+    console.error('inventory-items element not found');
+    return;
+  }
   inventoryItems.innerHTML = '';
   const availableWeapons = ['pressure-washer', 'missile-launcher']; // Always available
   availableWeapons.forEach(type => {
@@ -383,7 +421,10 @@ function populateToolbelt() {
   });
 
   const toolbeltSlots = document.getElementById('toolbelt-slots');
-  toolbeltSlots.innerHTML = '';
+  if (!toolbeltSlots) {
+    console.error('toolbelt-slots element not found');
+    return;
+  }
   let toolbelt = currentUser.toolbelt || [];
   if (toolbelt.length === 0) {
     toolbelt = ['pressure-washer'];
@@ -513,6 +554,7 @@ document.getElementById('save-toolbelt').addEventListener('click', () => {
   });
   socket.emit('save-toolbelt', { userId: currentUser._id, toolbelt });
   currentUser.toolbelt = toolbelt; // Update local
+  populateToolbelt(); // Refresh display
 });
 
 // Hotkeys for toolbelt selection (1-6)
@@ -532,6 +574,7 @@ function startGame() {
   if (gameInstance) return; // Prevent multiple instances
   gameInstance = new Phaser.Game(config);
   document.getElementById('toolbelt-ui').style.display = 'block';
+  document.getElementById('toggle-boosts').style.display = 'block';
   updateGameToolbelt();
 }
 
