@@ -605,6 +605,7 @@ class GameScene extends Phaser.Scene {
     preload() {
         // Load assets here (e.g., this.load.image('tower', 'assets/tower.png');)
         this.load.spritesheet('conveyor-belt', 'assets/conveyor-belt.png', { frameWidth: 10, frameHeight: 10 });
+        this.load.image('waste', 'assets/waste-01.png');
     }
 
     create() {
@@ -811,7 +812,8 @@ class GameScene extends Phaser.Scene {
 
         // Add enemies
         shift.enemies.forEach(e => {
-            let enemy = this.add.rectangle(e.x, e.y, 10, 10, 0xff0000);
+            let enemy = this.add.sprite(e.x, e.y, 'waste');
+            enemy.setDisplaySize(10, 10);
             this.enemies.add(enemy);
         });
 
