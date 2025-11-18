@@ -738,9 +738,19 @@ class GameScene extends Phaser.Scene {
             this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
             // Draw path
             this.pathSprites.clear(true, true);
-            shift.map.pathSquares.forEach(square => {
+            shift.map.pathSquares.forEach((square, index) => {
                 const sprite = this.add.sprite(square.x * this.cellSize + 5, square.y * this.cellSize + 5, 'conveyor-belt');
                 sprite.setDisplaySize(this.cellSize, this.cellSize);
+                // Determine direction to next square
+                const nextSquare = shift.map.pathSquares[index + 1];
+                if (nextSquare) {
+                    const dx = nextSquare.x - square.x;
+                    const dy = nextSquare.y - square.y;
+                    if (dx === 1) sprite.angle = 0; // right
+                    else if (dx === -1) sprite.angle = 180; // left
+                    else if (dy === 1) sprite.angle = 90; // down
+                    else if (dy === -1) sprite.angle = 270; // up
+                }
                 sprite.play('conveyor-move');
                 this.pathSprites.add(sprite);
             });
