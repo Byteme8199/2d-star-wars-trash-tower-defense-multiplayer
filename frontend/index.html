@@ -11,14 +11,12 @@
             background-color: #000;
             font-family: Arial, sans-serif;
             color: #fff;
-            overflow: hidden;
         }
         #game-container {
-            width: 100vw;
-            height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            width: 800px;
+            height: 600px;
+            margin: 0 auto;
+            position: relative;
         }
         #login-container {
             position: absolute;
@@ -99,6 +97,22 @@
             margin: 10px;
             padding: 5px;
         }
+        .inventory-item, .toolbelt-slot, .game-toolbelt-slot {
+            border: 1px solid #ffd700;
+            padding: 5px;
+            margin: 5px;
+            display: inline-block;
+            min-width: 50px;
+            min-height: 50px;
+            text-align: center;
+            cursor: pointer;
+            position: relative;
+            vertical-align: top;
+        }
+        .toolbelt-slot.selected, .game-toolbelt-slot.selected {
+            border-color: red;
+            background-color: rgba(255, 0, 0, 0.2);
+        }
     </style>
 </head>
 <body>
@@ -114,6 +128,7 @@
         <div id="account-info">
             <span id="nav-username"></span> | Scrap: <span id="nav-scrap"></span> | Unlocks: <span id="nav-unlocks"></span>
         </div>
+        <button id="toggle-boosts">Show Boosts</button>
         <button id="locker-btn">Locker Room</button>
         <button id="logout-btn">Logout</button>
     </div>
@@ -127,13 +142,15 @@
         <div id="player-list">Players: <span id="players">You</span></div>
         <div id="loadout">
             <h3>Select Weapons</h3>
-            <select id="weapon-select">
-                <option value="pressure-washer">Pressure Washer</option>
-                <option value="laser-cutter">Laser Cutter</option>
-                <option value="waste-escape-pod">Waste Escape Pod</option>
-            </select>
-            <button id="add-weapon">Add to Loadout</button>
-            <div id="selected-weapons"></div>
+            <div id="inventory">
+                <h4>Inventory</h4>
+                <div id="inventory-items"></div>
+            </div>
+            <div id="toolbelt">
+                <h4>Toolbelt</h4>
+                <div id="toolbelt-slots"></div>
+                <button id="save-toolbelt">Save Toolbelt</button>
+            </div>
         </div>
         <div id="chat" style="display: none;">
             <h3>Chat</h3>
@@ -149,9 +166,24 @@
         <div>Scrap: <span id="scrap">0</span></div>
     </div>
     <div id="tower-panel">
-        <button class="tower-button" id="weapon1">Pressure Washer</button>
-        <button class="tower-button" id="weapon2">Laser Cutter</button>
-        <button class="tower-button" id="weapon3">Waste Escape Pod</button>
+    </div>
+
+    <div id="item-modal" style="display: none; position: absolute; background: rgba(0,0,0,0.9); color: white; border: 1px solid #ffd700; padding: 10px; border-radius: 5px; z-index: 1000; max-width: 200px; pointer-events: none;"></div>
+
+    <div id="boost-modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.9); color: white; border: 1px solid #ffd700; padding: 20px; border-radius: 5px; z-index: 1000; text-align: center;">
+        <h3>Choose a Boost!</h3>
+        <div id="boost-options"></div>
+    </div>
+
+    <div id="show-boosts-modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.9); color: white; border: 1px solid #ffd700; padding: 20px; border-radius: 5px; z-index: 1000; text-align: center; max-height: 80vh; overflow-y: auto;">
+        <h3>Your Boosts</h3>
+        <div id="boosts-list"></div>
+        <button id="close-boosts-modal" style="margin-top: 10px;">Close</button>
+    </div>
+
+    <div id="game-container"></div>
+    <div id="toolbelt-ui" style="display: none; position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); background: rgba(0, 0, 0, 0.7); padding: 10px; border-radius: 5px; z-index: 10;">
+        <div id="game-toolbelt-slots"></div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
