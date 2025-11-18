@@ -588,7 +588,7 @@ class GameScene extends Phaser.Scene {
 
     preload() {
         // Load assets here (e.g., this.load.image('tower', 'assets/tower.png');)
-        this.load.image('conveyor-belt', 'assets/conveyor-belt.gif');
+        this.load.spritesheet('conveyor-belt', 'assets/conveyor-belt.png', { frameWidth: 10, frameHeight: 10 });
     }
 
     create() {
@@ -609,6 +609,14 @@ class GameScene extends Phaser.Scene {
 
         // Path sprites group
         this.pathSprites = this.add.group();
+
+        // Create conveyor belt animation
+        this.anims.create({
+            key: 'conveyor-move',
+            frames: this.anims.generateFrameNumbers('conveyor-belt', { start: 0, end: 3 }),
+            frameRate: 10,
+            repeat: -1
+        });
 
         // Graphics for grid
         this.gridGraphics = this.add.graphics();
@@ -731,8 +739,9 @@ class GameScene extends Phaser.Scene {
             // Draw path
             this.pathSprites.clear(true, true);
             shift.map.pathSquares.forEach(square => {
-                const sprite = this.add.image(square.x * this.cellSize + 5, square.y * this.cellSize + 5, 'conveyor-belt');
+                const sprite = this.add.sprite(square.x * this.cellSize + 5, square.y * this.cellSize + 5, 'conveyor-belt');
                 sprite.setDisplaySize(this.cellSize, this.cellSize);
+                sprite.play('conveyor-move');
                 this.pathSprites.add(sprite);
             });
             // Create enemy path
