@@ -239,10 +239,13 @@ document.getElementById('login-btn').addEventListener('click', async () => {
       });
       // Create shift on entering locker room
       console.log('Creating shift for userId:', currentUser._id);
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 10000); // 10 second timeout
       fetch('http://localhost:3001/create-shift', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUser._id })
+        body: JSON.stringify({ userId: currentUser._id }),
+        signal: controller.signal
       }).then(res => {
         if (res.ok) {
           return res.json();
@@ -257,9 +260,22 @@ document.getElementById('login-btn').addEventListener('click', async () => {
         const startBtn = document.getElementById('start-shift');
         startBtn.disabled = true;
         startBtn.textContent = "Generating Map...";
-        socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
+        if (socket.connected) {
+          socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
+        } else {
+          socket.on('connect', () => {
+            socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
+          });
+        }
         previousPlayers = [{ userId: currentUser._id, username: currentUser.username }];
-      }).catch(err => console.error('Create shift error:', err));
+      }).catch(err => {
+        console.error('Create shift error:', err);
+        if (err.name === 'AbortError') {
+          document.getElementById('code').textContent = 'Timeout generating shift';
+        } else {
+          document.getElementById('code').textContent = 'Error generating shift';
+        }
+      });
     } else {
       const messageEl = getMessageElement();
       messageEl.textContent = data.message;
@@ -614,13 +630,13 @@ class GameScene extends Phaser.Scene {
         this.anims.create({
             key: 'conveyor-move',
             frames: this.anims.generateFrameNumbers('conveyor-belt', { start: 0, end: 3 }),
-            frameRate: 10,
+            frameRate: 3,
             repeat: -1
         });
 
         // Graphics for grid
         this.gridGraphics = this.add.graphics();
-        this.gridGraphics.lineStyle(1, 0x808080); // Gray color
+        this.gridGraphics.lineStyle(1, 0x121212); // Gray color
         for (let x = 0; x <= 800; x += this.cellSize) {
             this.gridGraphics.lineBetween(x, 0, x, 600);
         }
