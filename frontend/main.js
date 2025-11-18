@@ -573,6 +573,8 @@ document.addEventListener('keydown', (e) => {
 function startGame() {
   if (gameInstance) return; // Prevent multiple instances
   gameInstance = new Phaser.Game(config);
+  document.getElementById('game-container').style.display = 'block';
+  document.getElementById('ui-overlay').style.display = 'block';
   document.getElementById('toolbelt-ui').style.display = 'block';
   document.getElementById('toggle-boosts').style.display = 'block';
   updateGameToolbelt();
