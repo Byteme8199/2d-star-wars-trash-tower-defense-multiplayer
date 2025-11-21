@@ -575,7 +575,11 @@ class GameScene extends Phaser.Scene {
               const dist = Math.sqrt((this.player.x - s.x)**2 + (this.player.y - s.y)**2);
               if (dist < playerData.pickupRadius && !this.collectingScrapIds.has(s.id)) {
                 this.collectingScrapIds.add(s.id);
-                const sprite = this.scraps.children.entries.find(child => Math.abs(child.x - s.x) < 1 && Math.abs(child.y - s.y) < 1);
+                const sprite = this.scraps.children.entries.find(child => {
+                  const dx = child.x - s.x;
+                  const dy = child.y - s.y;
+                  return dx * dx + dy * dy < 25; // within ~5 pixels
+                });
                 if (sprite) {
                   this.tweens.add({
                     targets: sprite,
@@ -584,18 +588,9 @@ class GameScene extends Phaser.Scene {
                     duration: 300,
                     ease: 'Linear',
                     onComplete: () => {
-                      this.tweens.add({
-                        targets: sprite,
-                        x: 400,
-                        y: 520,
-                        duration: 300,
-                        ease: 'Linear',
-                        onComplete: () => {
-                          sprite.destroy();
-                          socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
-                          this.collectingScrapIds.delete(s.id);
-                        }
-                      });
+                      sprite.destroy();
+                      socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
+                      this.collectingScrapIds.delete(s.id);
                     }
                   });
                 }
@@ -703,7 +698,7 @@ class GameScene extends Phaser.Scene {
         this.scraps.clear(true, true);
         shift.scraps.forEach(s => {
           if (!this.collectingScrapIds.has(s.id)) {
-            let scrap = this.add.circle(s.x, s.y, 5, 0x0000ff);
+            let scrap = this.add.circle(s.x, s.y, 5, 0xffffff);
             this.scraps.add(scrap);
             this.tweens.add({
               targets: scrap,
