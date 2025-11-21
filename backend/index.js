@@ -527,7 +527,7 @@ io.on('connection', (socket) => {
           }
           p.boosts = []; // Start with no boosts
           p.scrap = 0; // Starting scrap
-          p.pickupRadius = 200; // Default pickup radius (10x for testing)
+          p.pickupRadius = 30; // Default pickup radius
           p.pickupThreshold = 100; // Boost threshold
           p.previousPickupThreshold = 0; // Previous threshold
         });

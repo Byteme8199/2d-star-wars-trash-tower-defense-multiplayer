@@ -349,18 +349,9 @@ document.getElementById('save-toolbelt').addEventListener('click', () => {
   populateToolbelt(); // Refresh display
 });
 
-// Hotkeys for toolbelt selection (1-6)
-document.addEventListener('keydown', (e) => {
-  if (!currentUser) return;
-  if (e.key >= '1' && e.key <= '6') {
-    const index = parseInt(e.key) - 1;
-    const toolbelt = currentUser.toolbelt || [];
-    if (toolbelt[index]) {
-      selectedIndex = index;
-      updateToolbeltSelection();
-      updateGameToolbelt();
-    }
-  }
+// Disable right-click context menu
+document.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
 });
 
 // Pause game with Space
@@ -659,6 +650,11 @@ class GameScene extends Phaser.Scene {
         this.weapons.clear(true, true);
         this.projectiles.clear(true, true);
 
+        // Remove old collider
+        if (this.playerWeaponCollider) {
+            this.physics.world.removeCollider(this.playerWeaponCollider);
+        }
+
         // Update position maps
         this.weaponPositions = {};
         shift.weapons.forEach(w => this.weaponPositions[w.id] = {x: w.x, y: w.y, type: w.type});
@@ -684,6 +680,9 @@ class GameScene extends Phaser.Scene {
             weapon.setAlpha(alpha);
             this.weapons.add(weapon);
         });
+
+        // Add new collider
+        this.playerWeaponCollider = this.physics.add.collider(this.player, this.weapons);
 
         // Add projectiles
         shift.projectiles.forEach(p => {
@@ -731,6 +730,22 @@ class GameScene extends Phaser.Scene {
     placeWeapon(pointer) {
         if (this.paused || this.inputsDisabled) return;
         if (!currentUser) return;
+        if (pointer.button === 2) {
+            if (!currentShiftId) return;
+            // Destroy weapon at position
+            const gx = Math.floor(pointer.x / this.cellSize);
+            const gy = Math.floor(pointer.y / this.cellSize);
+            for (let [id, pos] of Object.entries(this.weaponPositions)) {
+                const gridSize = WEAPON_GRID_SIZES[pos.type] || {w:1,h:1};
+                const wx = Math.floor(pos.x / this.cellSize) - Math.floor(gridSize.w / 2);
+                const wy = Math.floor(pos.y / this.cellSize) - Math.floor(gridSize.h / 2);
+                if (gx >= wx && gx < wx + gridSize.w && gy >= wy && gy < wy + gridSize.h) {
+                    socket.emit('destroy-weapon', { shiftId: currentShiftId, weaponId: id, userId: currentUser._id });
+                    break;
+                }
+            }
+            return;
+        }
         if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
             currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
         }
@@ -893,6 +908,7 @@ function loadLockerRoomPage() {
   selectedIndex = 0;
   // Disable buttons initially
   document.getElementById('start-shift').disabled = true;
+  document.getElementById('start-shift').textContent = "I'm Ready";
   document.getElementById('join-shift-btn').disabled = false;
 }
 
@@ -903,6 +919,7 @@ function connectSocketIO() {
     if (!currentUser) return;
     // Update player list if locker room is visible
     if (document.getElementById('locker-room').style.display !== 'none') {
+      if (shift.id !== currentShiftId) return; // Only update for current shift
       const playerNames = shift.players.map(p => p.username).join(', ');
       document.getElementById('players').textContent = playerNames;
       // Show/hide chat based on multiplayer
