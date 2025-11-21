@@ -770,6 +770,7 @@ async function gameLoop(shiftId) {
             }
             let oldScrap = shift.scrap;
             shift.scrap += scrapGain;
+            player.scrap += scrapGain;
             if (shift.scrap >= shift.boostThreshold) {
               const boosts = generateRandomBoosts(3);
               player.boostChoices = { id: Date.now().toString(), options: boosts };
@@ -847,6 +848,7 @@ async function gameLoop(shiftId) {
           }
           let oldScrap = shift.scrap;
           shift.scrap += scrapGain;
+          player.scrap += scrapGain;
           if (shift.scrap >= shift.boostThreshold) {
             const boosts = generateRandomBoosts(3);
             player.boostChoices = { id: Date.now().toString(), options: boosts };
