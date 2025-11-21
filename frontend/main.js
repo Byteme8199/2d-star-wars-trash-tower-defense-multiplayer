@@ -78,7 +78,6 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
   document.getElementById('login-container').style.display = 'block';
   document.getElementById('nav').style.display = 'none';
   document.getElementById('locker-room').style.display = 'none';
-  document.getElementById('ui-overlay').style.display = 'none';
   document.getElementById('tower-panel').style.display = 'none';
   document.getElementById('item-modal').style.display = 'none';
   document.getElementById('boost-modal').style.display = 'none';
@@ -400,7 +399,6 @@ function startGame() {
   if (gameInstance) return; // Prevent multiple instances
   gameInstance = new Phaser.Game(config);
   document.getElementById('game-container').style.display = 'block';
-  document.getElementById('ui-overlay').style.display = 'block';
   document.getElementById('toolbelt-ui').style.display = 'block';
   document.getElementById('scrap-bar-container').style.display = 'block';
   document.getElementById('toggle-boosts').style.display = 'block';
@@ -874,7 +872,6 @@ function loadLockerRoomPage() {
   document.getElementById('nav-username').textContent = currentUser.username;
   // Hide game elements
   document.getElementById('game-container').style.display = 'none';
-  document.getElementById('ui-overlay').style.display = 'none';
   document.getElementById('toolbelt-ui').style.display = 'none';
   document.getElementById('scrap-bar-container').style.display = 'none';
   document.getElementById('toggle-boosts').style.display = 'none';
