@@ -84,7 +84,7 @@ const projectileSchema = new mongoose.Schema({
 // Shift model for multiplayer shifts
 const shiftSchema = new mongoose.Schema({
   id: String,
-  players: [{ userId: String, username: String, x: Number, y: Number, inventory: [Object], boosts: [Object], scrap: {type: Number, default: 0}, boostChoices: Object, lastPlaced: {type: Number, default: 0} }],
+  players: [{ userId: String, username: String, x: Number, y: Number, inventory: [Object], boosts: [Object], scrap: {type: Number, default: 0}, boostChoices: Object, lastPlaced: {type: Number, default: 0}, pickupRadius: {type: Number, default: 20} }],
   map: { type: Object, default: {} }, // e.g., path data
   wave: { type: Number, default: 1 },
   overflow: { type: Number, default: 100 },
@@ -93,6 +93,7 @@ const shiftSchema = new mongoose.Schema({
   enemies: [enemySchema],
   weapons: [weaponSchema],
   projectiles: [projectileSchema],
+  scraps: [{ id: String, x: Number, y: Number, value: {type: Number, default: 10} }],
   status: { type: String, default: 'waiting' }, // waiting, active, ended
   ready: [{ userId: String }],
   enemiesDefeated: { type: Number, default: 0 },
@@ -192,6 +193,14 @@ const BOOST_TYPES = {
   'enemy-freeze': {
     baseEffect: { freezeEnemies: true },
     description: 'Freezes all enemies in place for 5 seconds (one-time use).'
+  },
+  'scrap-suck': {
+    baseEffect: { suckScrap: true },
+    description: 'Instantly collects all scrap on the screen (one-time use).'
+  },
+  'pickup-boost': {
+    baseEffect: { pickupRadiusMult: 2.5 },
+    description: 'Increases scrap pickup radius until end of shift.'
   }
 };
 
@@ -518,6 +527,7 @@ io.on('connection', (socket) => {
           }
           p.boosts = []; // Start with no boosts
           p.scrap = 0; // Starting scrap
+          p.pickupRadius = 20; // Default pickup radius
         });
         shift.status = 'active';
         await shift.save();
@@ -578,6 +588,12 @@ io.on('connection', (socket) => {
       } else if (chosen.type === 'enemy-freeze') {
         // Freeze enemies for 5 seconds
         shift.freezeEnd = Date.now() + 5000;
+      } else if (chosen.type === 'scrap-suck') {
+        // Collect all scraps
+        shift.scraps.forEach(s => {
+          player.scrap += s.value;
+        });
+        shift.scraps = [];
       } else {
         // Normal stacking boost
         player.boosts.push(chosen);
@@ -595,6 +611,10 @@ io.on('connection', (socket) => {
             }
           }
         });
+        // Apply pickup radius
+        if (chosen.effect.pickupRadiusMult) {
+          player.pickupRadius = 20 * chosen.effect.pickupRadiusMult;
+        }
       }
       player.boostChoices = null;
       if (shift.players.length === 1) {
@@ -620,6 +640,22 @@ io.on('connection', (socket) => {
     const shift = await Shift.findOne({ id: shiftId });
     if (shift && shift.players.length === 1) {
       shift.paused = false;
+      await shift.save();
+      io.to(shiftId).emit('shift-update', shift);
+    }
+  });
+
+  socket.on('collect-scrap', async (data) => {
+    const { shiftId, scrapId } = data;
+    const shift = await Shift.findOne({ id: shiftId });
+    if (!shift) return;
+    const scrap = shift.scraps.find(s => s.id === scrapId);
+    if (scrap) {
+      const player = shift.players.find(p => p.userId === socket.userId);
+      if (player) {
+        player.scrap += scrap.value;
+      }
+      shift.scraps = shift.scraps.filter(s => s !== scrap);
       await shift.save();
       io.to(shiftId).emit('shift-update', shift);
     }
@@ -770,7 +806,7 @@ async function gameLoop(shiftId) {
             }
             let oldScrap = shift.scrap;
             shift.scrap += scrapGain;
-            player.scrap += scrapGain;
+            shift.scraps.push({ id: Date.now().toString() + Math.random(), x: nearest.x, y: nearest.y, value: scrapGain });
             if (shift.scrap >= shift.boostThreshold) {
               const boosts = generateRandomBoosts(3);
               player.boostChoices = { id: Date.now().toString(), options: boosts };
@@ -848,7 +884,6 @@ async function gameLoop(shiftId) {
           }
           let oldScrap = shift.scrap;
           shift.scrap += scrapGain;
-          player.scrap += scrapGain;
           if (shift.scrap >= shift.boostThreshold) {
             const boosts = generateRandomBoosts(3);
             player.boostChoices = { id: Date.now().toString(), options: boosts };

@@ -402,6 +402,7 @@ function startGame() {
   document.getElementById('game-container').style.display = 'block';
   document.getElementById('ui-overlay').style.display = 'block';
   document.getElementById('toolbelt-ui').style.display = 'block';
+  document.getElementById('scrap-bar-container').style.display = 'block';
   document.getElementById('toggle-boosts').style.display = 'block';
   updateGameToolbelt();
 }
@@ -472,8 +473,8 @@ class GameScene extends Phaser.Scene {
         // Heat text
         this.heatText = this.add.text(700, 10, 'Heat: 0', { fontSize: '16px', fill: '#fff' });
 
-        // Scrap text
-        this.scrapText = this.add.text(700, 30, 'Scrap: 0', { fontSize: '16px', fill: '#fff' });
+        // Scrap group
+        this.scraps = this.add.group();
 
         // Position maps
         this.weaponPositions = {};
@@ -561,6 +562,18 @@ class GameScene extends Phaser.Scene {
                     }
                 }
             }
+        }
+        // Collect scraps
+        if (!this.paused && this.player) {
+          const playerData = window.currentShift.players.find(p => p.userId === currentUser._id);
+          if (playerData) {
+            window.currentShift.scraps.forEach(s => {
+              const dist = Math.sqrt((this.player.x - s.x)**2 + (this.player.y - s.y)**2);
+              if (dist < playerData.pickupRadius) {
+                socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
+              }
+            });
+          }
         }
     }
 
@@ -650,7 +663,25 @@ class GameScene extends Phaser.Scene {
         // Update scrap
         const player = shift.players.find(p => p.userId === currentUser._id);
         if (player && (typeof player.scrap !== 'number' || isNaN(player.scrap))) player.scrap = 0;
-        this.scrapText.setText('Scrap: ' + (player ? player.scrap : 0));
+        // Update scrap bar
+        const bar = document.getElementById('scrap-bar');
+        const maxScrap = 1000;
+        const percentage = Math.min((player.scrap / maxScrap) * 100, 100);
+        bar.style.width = percentage + '%';
+        document.getElementById('scrap-text').textContent = 'Scrap: ' + player.scrap;
+
+        // Update scraps
+        this.scraps.clear(true, true);
+        shift.scraps.forEach(s => {
+          let scrap = this.add.circle(s.x, s.y, 5, 0x0000ff);
+          this.scraps.add(scrap);
+          this.tweens.add({
+            targets: scrap,
+            y: s.y + 10,
+            duration: 300,
+            ease: 'Bounce.easeOut'
+          });
+        });
 
         // Update toolbelt
         updateGameToolbelt();
@@ -814,6 +845,7 @@ function loadLockerRoomPage() {
   document.getElementById('game-container').style.display = 'none';
   document.getElementById('ui-overlay').style.display = 'none';
   document.getElementById('toolbelt-ui').style.display = 'none';
+  document.getElementById('scrap-bar-container').style.display = 'none';
   document.getElementById('toggle-boosts').style.display = 'none';
   // Destroy game instance
   if (gameInstance) {
@@ -826,7 +858,7 @@ function loadLockerRoomPage() {
   selectedIndex = 0;
   // Disable buttons initially
   document.getElementById('start-shift').disabled = true;
-  document.getElementById('join-shift-btn').disabled = true;
+  document.getElementById('join-shift-btn').disabled = false;
 }
 
 function connectSocketIO() {
@@ -1092,7 +1124,7 @@ function showBoostModal(choices) {
         button.style.width = '30%'; // Roughly equal width
         button.style.border = `2px solid ${getRarityColor(choice.rarity)}`;
         // One-time use boosts are yellow
-        if (choice.effect.healWeapons || choice.effect.destroyWaste || choice.effect.freezeEnemies) {
+        if (choice.effect.healWeapons || choice.effect.destroyWaste || choice.effect.freezeEnemies || choice.effect.suckScrap) {
             button.style.border = '2px solid #ffff00';
         }
         button.style.color = 'black'; // Text remains black
