@@ -584,20 +584,9 @@ class GameScene extends Phaser.Scene {
                   return dx * dx + dy * dy < 25; // within ~5 pixels
                 });
                 if (sprite) {
+                  sprite.scrapId = s.id;
                   this.collectingScraps.add(sprite);
                   this.scraps.remove(sprite);
-                  this.tweens.add({
-                    targets: sprite,
-                    x: this.player.x,
-                    y: this.player.y,
-                    duration: 300,
-                    ease: 'Linear',
-                    onComplete: () => {
-                      sprite.destroy();
-                      socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
-                      this.collectingScrapIds.delete(s.id);
-                    }
-                  });
                 } else {
                   // If no sprite found, remove from collecting to allow retry
                   this.collectingScrapIds.delete(s.id);
@@ -606,6 +595,21 @@ class GameScene extends Phaser.Scene {
             });
           }
         }
+        // Move collecting scraps towards player
+        this.collectingScraps.children.entries.forEach(sprite => {
+          const dx = this.player.x - sprite.x;
+          const dy = this.player.y - sprite.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > 10) {
+            sprite.x += (dx / dist) * 8; // speed
+            sprite.y += (dy / dist) * 8;
+          } else {
+            // Close enough, collect
+            socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: sprite.scrapId });
+            this.collectingScrapIds.delete(sprite.scrapId);
+            sprite.destroy();
+          }
+        });
     }
 
     updateFromServer(shift) {
