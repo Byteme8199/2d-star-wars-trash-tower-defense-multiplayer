@@ -474,6 +474,9 @@ class GameScene extends Phaser.Scene {
         // Scrap group
         this.scraps = this.add.group();
 
+        // Collecting scrap group
+        this.collectingScraps = this.add.group();
+
         // Collecting scrap IDs
         this.collectingScrapIds = new Set();
 
@@ -575,25 +578,20 @@ class GameScene extends Phaser.Scene {
               const dist = Math.sqrt((this.player.x - s.x)**2 + (this.player.y - s.y)**2);
               if (dist < playerData.pickupRadius && !this.collectingScrapIds.has(s.id)) {
                 this.collectingScrapIds.add(s.id);
-                const sprite = this.scraps.children.entries.find(child => {
-                  const dx = child.x - s.x;
-                  const dy = child.y - s.y;
-                  return dx * dx + dy * dy < 25; // within ~5 pixels
+                this.collectingScraps.add(sprite);
+                this.scraps.remove(sprite);
+                this.tweens.add({
+                  targets: sprite,
+                  x: this.player.x,
+                  y: this.player.y,
+                  duration: 300,
+                  ease: 'Linear',
+                  onComplete: () => {
+                    sprite.destroy();
+                    socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
+                    this.collectingScrapIds.delete(s.id);
+                  }
                 });
-                if (sprite) {
-                  this.tweens.add({
-                    targets: sprite,
-                    x: this.player.x,
-                    y: this.player.y,
-                    duration: 300,
-                    ease: 'Linear',
-                    onComplete: () => {
-                      sprite.destroy();
-                      socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
-                      this.collectingScrapIds.delete(s.id);
-                    }
-                  });
-                }
               }
             });
           }
