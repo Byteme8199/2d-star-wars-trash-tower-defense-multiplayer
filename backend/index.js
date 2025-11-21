@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const path = require('path');
 
 const JWT_SECRET = 'your-secret-key'; // In production, use environment variable
 
@@ -22,6 +23,7 @@ app.get('/test', (req, res) => {
 });
 app.use(cors());
 app.use(express.json());
+app.use(express.static(path.join(__dirname, '../frontend')));
 
 // Connect to MongoDB
 mongoose.connect('mongodb://localhost:27017/coruscant-defense', {
@@ -623,6 +625,37 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('forfeit-shift', async (data) => {
+    const { shiftId, userId } = data;
+    const shift = await Shift.findOne({ id: shiftId });
+    if (!shift) return;
+    const player = shift.players.find(p => p.userId === userId);
+    if (!player) return;
+    const scrapEarned = player.scrap - 200;
+    const wavesCompleted = shift.wave - 1;
+    const fullCredits = Math.floor((scrapEarned * wavesCompleted + shift.enemiesDefeated) / 100);
+    const credits = Math.floor(fullCredits * 0.8);
+    const user = await User.findById(userId);
+    if (user) {
+      user.credits += credits;
+      await user.save();
+    }
+    // Remove player from shift
+    shift.players = shift.players.filter(p => p.userId !== userId);
+    // If no players left, end the shift
+    if (shift.players.length === 0) {
+      shift.status = 'ended';
+      if (activeShifts[shiftId]) {
+        clearInterval(activeShifts[shiftId].intervalId);
+        delete activeShifts[shiftId];
+      }
+    }
+    await shift.save();
+    socket.leave(shiftId);
+    io.to(shiftId).emit('shift-update', shift);
+    // Do not emit 'game-over' for forfeit, as alert is shown locally
+  });
+
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
     // Handle player leaving shift
@@ -839,10 +872,25 @@ async function gameLoop(shiftId) {
   // Check win/lose
   if (shift.overflow <= 0) {
     shift.status = 'ended';
-    // Update global overflow
-    const globalState = await GlobalState.findOne() || new GlobalState();
-    globalState.overflow -= 10;
-    await globalState.save();
+    // Clear boost choices
+    shift.players.forEach(p => p.boostChoices = null);
+    // Calculate credits for each player
+    for (const player of shift.players) {
+      const scrapEarned = player.scrap - 200;
+      const wavesCompleted = shift.wave - 1;
+      const credits = Math.floor((scrapEarned * wavesCompleted + shift.enemiesDefeated) / 100);
+      const user = await User.findById(player.userId);
+      if (user) {
+        user.credits += credits;
+        await user.save();
+      }
+      io.to(shiftId).emit('game-over', { playerId: player.userId, credits });
+    }
+    // Stop the game loop
+    if (activeShifts[shiftId]) {
+      clearInterval(activeShifts[shiftId].intervalId);
+      delete activeShifts[shiftId];
+    }
   }
 
   await shift.save();

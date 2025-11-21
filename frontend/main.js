@@ -29,122 +29,14 @@ const WEAPON_GRID_SIZES = {
 window.addEventListener('load', async () => {
   const token = localStorage.getItem('token');
   if (token) {
-    try {
-      const res = await fetch('http://localhost:3001/me', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      const data = await res.json();
-      if (res.ok) {
-        currentUser = data.user;
-        if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-          currentUser.toolbelt = ['pressure-washer'];
-        }
-        document.getElementById('login-container').style.display = 'none';
-        document.getElementById('nav').style.display = 'flex';
-        document.getElementById('locker-room').style.display = 'block';
-        populateToolbelt();
-        document.getElementById('nav-username').textContent = currentUser.username;
-        document.getElementById('nav-scrap').textContent = currentUser.scrap;
-        document.getElementById('nav-unlocks').textContent = currentUser.unlocks.join(', ');
-        socket = io('http://localhost:3001');
-        // Set up socket listeners
-        socket.on('shift-update', (shift) => {
-            // Update player list if locker room is visible
-            if (document.getElementById('locker-room').style.display !== 'none') {
-                const playerNames = shift.players.map(p => p.username).join(', ');
-                document.getElementById('players').textContent = playerNames;
-                // Show/hide chat based on multiplayer
-                const chatDiv = document.getElementById('chat');
-                if (shift.players.length > 1) {
-                    chatDiv.style.display = 'block';
-                } else {
-                    chatDiv.style.display = 'none';
-                }
-                // Show/hide join section based on multiplayer
-                const joinSec = document.getElementById('join-section');
-                if (shift.players.length > 1) {
-                    joinSec.style.display = 'none';
-                } else {
-                    joinSec.style.display = 'block';
-                }
-                // Show/hide join section based on multiplayer
-                const joinSection = document.getElementById('join-section');
-                if (shift.players.length > 1) {
-                    joinSection.style.display = 'none';
-                } else {
-                    joinSection.style.display = 'block';
-                }
-                // Update ready button
-                const startBtn = document.getElementById('start-shift');
-                if (shift.map) {
-                    // Map is generated, enable ready if not already ready
-                    if (shift.ready && shift.ready.some(r => r.userId === currentUser._id)) {
-                        startBtn.textContent = "Waiting for others...";
-                        startBtn.disabled = true;
-                    } else {
-                        startBtn.textContent = "I'm Ready";
-                        startBtn.disabled = false;
-                    }
-                } else {
-                    // Map not generated yet
-                    startBtn.disabled = true;
-                    startBtn.textContent = "Generating Map...";
-                }
-                // Update previousPlayers before notifications
-                const currentPrevious = [...previousPlayers];
-                // Notifications
-                const newPlayers = shift.players.filter(p => !currentPrevious.some(pp => pp.userId === p.userId));
-                if (newPlayers.length > 0) {
-                    newPlayers.forEach(newPlayer => {
-                        if (newPlayer.userId === currentUser._id) {
-                            // You joined
-                            const host = shift.players[0];
-                            alert(`You've joined ${host.username}'s shift`);
-                        } else {
-                            // Someone else joined
-                            alert(`${newPlayer.username} has joined your shift`);
-                        }
-                    });
-                }
-                previousPlayers = [...shift.players];
-            }
-        });
-        socket.on('chat-message', (data) => {
-            const messagesDiv = document.getElementById('chat-messages');
-            const messageElement = document.createElement('div');
-            messageElement.textContent = `${data.username}: ${data.message}`;
-            messagesDiv.appendChild(messageElement);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        });
-        socket.on('shift-started', () => {
-            document.getElementById('locker-room').style.display = 'none';
-            startGame();
-        });
-        socket.on('reconnect', () => {
-            if (currentShiftId) {
-                socket.emit('join-shift', { shiftId: currentShiftId, userId: currentUser._id });
-            }
-        });
-        // Create shift on entering locker room
-        fetch('http://localhost:3001/create-shift', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: currentUser._id })
-        }).then(res => res.json()).then(data => {
-          currentShiftId = data.shift.id;
-          document.getElementById('code').textContent = currentShiftId;
-          // Disable ready button until map is generated
-          const startBtn = document.getElementById('start-shift');
-          startBtn.disabled = true;
-          startBtn.textContent = "Generating Map...";
-          socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
-          previousPlayers = [{ userId: currentUser._id, username: currentUser.username }];
-        });
-      } else {
-        localStorage.removeItem('token');
-      }
-    } catch (err) {
-      localStorage.removeItem('token');
+    const success = await loginUser({ token });
+    if (success) {
+      loadLockerRoomPage();
+      connectSocketIO();
+      await obtainShiftCode();
+      obtainInventory();
+      obtainSavedToolbelt();
+      enableButtons();
     }
   }
 });
@@ -153,137 +45,14 @@ document.getElementById('login-btn').addEventListener('click', async () => {
   console.log('Login button clicked');
   const username = document.getElementById('username').value;
   const password = document.getElementById('password').value;
-  try {
-    const res = await fetch('http://localhost:3001/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      currentUser = data.user;
-      if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-        currentUser.toolbelt = ['pressure-washer'];
-      }
-      localStorage.setItem('token', data.token);
-      document.getElementById('login-container').style.display = 'none';
-      document.getElementById('nav').style.display = 'flex';
-      document.getElementById('locker-room').style.display = 'block';
-      document.getElementById('nav-username').textContent = currentUser.username;
-    //   document.getElementById('nav-scrap').textContent = currentUser.scrap;
-    //   document.getElementById('nav-unlocks').textContent = currentUser.unlocks.join(', ');
-      socket = io('http://localhost:3001');
-      // Set up socket listeners
-      socket.on('shift-update', (shift) => {
-          // Update player list if locker room is visible
-          if (document.getElementById('locker-room').style.display !== 'none') {
-              const playerNames = shift.players.map(p => p.username).join(', ');
-              document.getElementById('players').textContent = playerNames;
-              // Show/hide chat based on multiplayer
-              const chatDiv = document.getElementById('chat');
-              if (shift.players.length > 1) {
-                  chatDiv.style.display = 'block';
-              } else {
-                  chatDiv.style.display = 'none';
-              }
-              // Update ready button
-              const startBtn = document.getElementById('start-shift');
-              if (shift.map) {
-                  // Map is generated, enable ready if not already ready
-                  if (shift.ready && shift.ready.some(r => r.userId === currentUser._id)) {
-                      startBtn.textContent = "Waiting for others...";
-                      startBtn.disabled = true;
-                  } else {
-                      startBtn.textContent = "I'm Ready";
-                      startBtn.disabled = false;
-                  }
-              } else {
-                  // Map not generated yet
-                  startBtn.disabled = true;
-                  startBtn.textContent = "Generating Map...";
-              }
-              // Update previousPlayers before notifications
-              const currentPrevious = [...previousPlayers];
-              // Notifications
-              const newPlayers = shift.players.filter(p => !currentPrevious.some(pp => pp.userId === p.userId));
-              if (newPlayers.length > 0) {
-                  newPlayers.forEach(newPlayer => {
-                      if (newPlayer.userId === currentUser._id) {
-                          // You joined
-                          const host = shift.players[0];
-                          alert(`You've joined ${host.username}'s shift`);
-                      } else {
-                          // Someone else joined
-                          alert(`${newPlayer.username} has joined your shift`);
-                      }
-                  });
-              }
-              previousPlayers = [...shift.players];
-          }
-      });
-      socket.on('chat-message', (data) => {
-          const messagesDiv = document.getElementById('chat-messages');
-          const messageElement = document.createElement('div');
-          messageElement.textContent = `${data.username}: ${data.message}`;
-          messagesDiv.appendChild(messageElement);
-          messagesDiv.scrollTop = messagesDiv.scrollHeight;
-      });
-      socket.on('shift-started', () => {
-          document.getElementById('locker-room').style.display = 'none';
-          startGame();
-      });
-      socket.on('reconnect', () => {
-          if (currentShiftId) {
-              socket.emit('join-shift', { shiftId: currentShiftId, userId: currentUser._id });
-          }
-      });
-      // Create shift on entering locker room
-      console.log('Creating shift for userId:', currentUser._id);
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 10000); // 10 second timeout
-      fetch('http://localhost:3001/create-shift', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUser._id }),
-        signal: controller.signal
-      }).then(res => {
-        if (res.ok) {
-          return res.json();
-        } else {
-          throw new Error('Failed to create shift: ' + res.status);
-        }
-      }).then(data => {
-        console.log('Shift created:', data);
-        currentShiftId = data.shift.id;
-        document.getElementById('code').textContent = currentShiftId;
-        // Disable ready button until map is generated
-        const startBtn = document.getElementById('start-shift');
-        startBtn.disabled = true;
-        startBtn.textContent = "Generating Map...";
-        if (socket.connected) {
-          socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
-        } else {
-          socket.on('connect', () => {
-            socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
-          });
-        }
-        previousPlayers = [{ userId: currentUser._id, username: currentUser.username }];
-      }).catch(err => {
-        console.error('Create shift error:', err);
-        if (err.name === 'AbortError') {
-          document.getElementById('code').textContent = 'Timeout generating shift';
-        } else {
-          document.getElementById('code').textContent = 'Error generating shift';
-        }
-      });
-    } else {
-      const messageEl = getMessageElement();
-      messageEl.textContent = data.message;
-    }
-  } catch (error) {
-    console.error('Login error:', error);
-    const messageEl = getMessageElement();
-    messageEl.textContent = 'Login failed: ' + error.message;
+  const success = await loginUser({ username, password });
+  if (success) {
+    loadLockerRoomPage();
+    connectSocketIO();
+    await obtainShiftCode();
+    obtainInventory();
+    obtainSavedToolbelt();
+    enableButtons();
   }
 });
 
@@ -296,8 +65,7 @@ document.getElementById('register-btn').addEventListener('click', async () => {
     body: JSON.stringify({ username, password })
   });
   const data = await res.json();
-  const messageEl = getMessageElement();
-  messageEl.textContent = data.message;
+  showDismissableAlert(data.message, "OK");
 });
 
 document.getElementById('logout-btn').addEventListener('click', async () => {
@@ -337,6 +105,7 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 });
 
 document.getElementById('send-chat').addEventListener('click', () => {
+  if (!currentUser) return;
   const message = document.getElementById('chat-input').value.trim();
   if (message && currentShiftId) {
     socket.emit('chat-message', { shiftId: currentShiftId, message, username: currentUser.username });
@@ -351,10 +120,11 @@ document.getElementById('chat-input').addEventListener('keypress', (e) => {
 });
 
 document.getElementById('join-shift-btn').addEventListener('click', () => {
+  if (!currentUser) return;
   const code = document.getElementById('join-code').value.trim();
   if (code) {
     if (code === currentShiftId) {
-      alert("Can't join your own shift");
+      showDismissableAlert("Can't join your own shift", "OK");
       return;
     }
     fetch('http://localhost:3001/join-shift', {
@@ -373,11 +143,12 @@ document.getElementById('join-shift-btn').addEventListener('click', () => {
       document.getElementById('join-section').style.display = 'none';
       socket.emit('join-shift', { shiftId: code, userId: currentUser._id });
       previousPlayers = [...data.shift.players];
-    }).catch(err => alert(err.message));
+    }).catch(err => showDismissableAlert(err.message, "OK"));
   }
 });
 
 document.getElementById('start-shift').addEventListener('click', () => {
+  if (!currentUser) return;
   if (currentShiftId) {
     const startBtn = document.getElementById('start-shift');
     startBtn.textContent = "Waiting for others...";
@@ -387,6 +158,7 @@ document.getElementById('start-shift').addEventListener('click', () => {
 });
 
 document.getElementById('toggle-boosts').addEventListener('click', () => {
+  if (!currentUser) return;
   const modal = document.getElementById('show-boosts-modal');
   const boostsList = document.getElementById('boosts-list');
   boostsList.innerHTML = '';
@@ -408,6 +180,7 @@ document.getElementById('toggle-boosts').addEventListener('click', () => {
 });
 
 document.getElementById('close-boosts-modal').addEventListener('click', () => {
+  if (!currentUser) return;
   document.getElementById('show-boosts-modal').style.display = 'none';
   if (window.currentShift.players.length === 1) {
     socket.emit('resume-game', { shiftId: currentShiftId });
@@ -415,6 +188,7 @@ document.getElementById('close-boosts-modal').addEventListener('click', () => {
 });
 
 function populateToolbelt() {
+  if (!currentUser) return;
   const inventoryItems = document.getElementById('inventory-items');
   if (!inventoryItems) {
     console.error('inventory-items element not found');
@@ -497,6 +271,7 @@ function hideItemModal() {
 }
 
 function updateGameToolbelt() {
+  if (!currentUser) return;
   if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
     currentUser.toolbelt = ['pressure-washer'];
   }
@@ -565,6 +340,7 @@ function updateToolbeltSelection() {
 }
 
 document.getElementById('save-toolbelt').addEventListener('click', () => {
+  if (!currentUser) return;
   const toolbelt = [];
   document.querySelectorAll('.toolbelt-slot').forEach(slot => {
     if (slot.dataset.type) toolbelt.push(slot.dataset.type);
@@ -576,6 +352,7 @@ document.getElementById('save-toolbelt').addEventListener('click', () => {
 
 // Hotkeys for toolbelt selection (1-6)
 document.addEventListener('keydown', (e) => {
+  if (!currentUser) return;
   if (e.key >= '1' && e.key <= '6') {
     const index = parseInt(e.key) - 1;
     const toolbelt = currentUser.toolbelt || [];
@@ -583,6 +360,38 @@ document.addEventListener('keydown', (e) => {
       selectedIndex = index;
       updateToolbeltSelection();
       updateGameToolbelt();
+    }
+  }
+});
+
+// Pause game with Space
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && gameInstance && document.getElementById('game-container').style.display !== 'none') {
+    e.preventDefault();
+    const scene = gameInstance.scene.getScene('GameScene');
+    if (scene) {
+      if (scene.paused) {
+        scene.paused = false;
+        scene.scene.resume('GameScene');
+        document.getElementById('pause-modal').style.display = 'none';
+      } else {
+        scene.paused = true;
+        scene.scene.pause('GameScene');
+        showPauseModal();
+      }
+    }
+  }
+});
+
+// Game menu with Esc
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Escape' && gameInstance && document.getElementById('game-container').style.display !== 'none') {
+    e.preventDefault();
+    const scene = gameInstance.scene.getScene('GameScene');
+    if (scene) {
+      scene.paused = true;
+      scene.scene.pause('GameScene');
+      showGameMenu();
     }
   }
 });
@@ -620,6 +429,9 @@ class GameScene extends Phaser.Scene {
         this.gridWidth = 80;
         this.gridHeight = 60;
         this.pathSquares = new Set();
+
+        // Pause flag
+        this.paused = false;
 
         // Graphics for path
         this.graphics = this.add.graphics();
@@ -719,6 +531,7 @@ class GameScene extends Phaser.Scene {
     }
 
     update() {
+        if (this.paused) return;
         // Handle player movement
         if (this.player) {
             let dx = 0, dy = 0;
@@ -749,6 +562,8 @@ class GameScene extends Phaser.Scene {
     }
 
     updateFromServer(shift) {
+        if (!currentUser) return;
+        if (this.paused) return;
         window.currentShift = shift;
         // Update map if available
         if (shift.map && !this.enemyPath) {
@@ -757,17 +572,6 @@ class GameScene extends Phaser.Scene {
             this.pathSprites.clear(true, true);
             shift.map.pathSquares.forEach((square, index) => {
                 const sprite = this.add.sprite(square.x * this.cellSize + 5, square.y * this.cellSize + 5, 'conveyor-belt');
-                sprite.setDisplaySize(this.cellSize, this.cellSize);
-                // Determine direction to next square
-                const nextSquare = shift.map.pathSquares[index + 1];
-                if (nextSquare) {
-                    const dx = nextSquare.x - square.x;
-                    const dy = nextSquare.y - square.y;
-                    if (dx === 1) sprite.angle = 0; // right
-                    else if (dx === -1) sprite.angle = 180; // left
-                    else if (dy === 1) sprite.angle = 90; // down
-                    else if (dy === -1) sprite.angle = 270; // up
-                }
                 sprite.play('conveyor-move');
                 this.pathSprites.add(sprite);
             });
@@ -813,7 +617,6 @@ class GameScene extends Phaser.Scene {
         // Add enemies
         shift.enemies.forEach(e => {
             let enemy = this.add.sprite(e.x, e.y, 'waste');
-            enemy.setDisplaySize(10, 10);
             this.enemies.add(enemy);
         });
 
@@ -856,8 +659,10 @@ class GameScene extends Phaser.Scene {
     }
 
     placeWeapon(pointer) {
+        if (this.paused) return;
+        if (!currentUser) return;
         if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-            currentUser.toolbelt = ['pressure-washer'];
+            currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
         }
         if (currentShiftId) {
             let gx = Math.floor(pointer.x / this.cellSize);
@@ -891,6 +696,7 @@ class GameScene extends Phaser.Scene {
     }
 
     onPointerMove(pointer) {
+        if (!currentUser) return;
         this.hoverGraphics.clear();
         if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
             currentUser.toolbelt = ['pressure-washer'];
@@ -948,7 +754,323 @@ const config = {
 // Start game directly for testing
 // startGame();
 
+async function loginUser(credentials) {
+  if (credentials.token) {
+    try {
+      const res = await fetch('http://localhost:3001/me', {
+        headers: { 'Authorization': `Bearer ${credentials.token}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        currentUser = data.user;
+        if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
+          currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
+        }
+        return true;
+      } else {
+        localStorage.removeItem('token');
+        return false;
+      }
+    } catch (err) {
+      localStorage.removeItem('token');
+      return false;
+    }
+  } else {
+    try {
+      const res = await fetch('http://localhost:3001/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        currentUser = data.user;
+        if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
+          currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
+        }
+        localStorage.setItem('token', data.token);
+        return true;
+      } else {
+        showDismissableAlert(data.message, "OK");
+        return false;
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      showDismissableAlert('Login failed: ' + error.message, "OK");
+      return false;
+    }
+  }
+}
+
+function loadLockerRoomPage() {
+  document.getElementById('login-container').style.display = 'none';
+  document.getElementById('nav').style.display = 'flex';
+  document.getElementById('locker-room').style.display = 'block';
+  document.getElementById('nav-username').textContent = currentUser.username;
+  // Hide game elements
+  document.getElementById('game-container').style.display = 'none';
+  document.getElementById('ui-overlay').style.display = 'none';
+  document.getElementById('toolbelt-ui').style.display = 'none';
+  document.getElementById('toggle-boosts').style.display = 'none';
+  // Destroy game instance
+  if (gameInstance) {
+    gameInstance.destroy(true);
+    gameInstance = null;
+  }
+  // Reset game variables
+  currentShiftId = null;
+  previousPlayers = [];
+  selectedIndex = 0;
+  // Disable buttons initially
+  document.getElementById('start-shift').disabled = true;
+  document.getElementById('join-shift-btn').disabled = true;
+}
+
+function connectSocketIO() {
+  socket = io('http://localhost:3001');
+  // Set up socket listeners
+  socket.on('shift-update', (shift) => {
+    if (!currentUser) return;
+    // Update player list if locker room is visible
+    if (document.getElementById('locker-room').style.display !== 'none') {
+      const playerNames = shift.players.map(p => p.username).join(', ');
+      document.getElementById('players').textContent = playerNames;
+      // Show/hide chat based on multiplayer
+      const chatDiv = document.getElementById('chat');
+      if (shift.players.length > 1) {
+        chatDiv.style.display = 'block';
+      } else {
+        chatDiv.style.display = 'none';
+      }
+      // Show/hide join section based on multiplayer
+      const joinSec = document.getElementById('join-section');
+      if (shift.players.length > 1) {
+        joinSec.style.display = 'none';
+      } else {
+        joinSec.style.display = 'block';
+      }
+      // Update ready button
+      const startBtn = document.getElementById('start-shift');
+      if (shift.map) {
+        // Map is generated, enable ready if not already ready
+        if (shift.ready && shift.ready.some(r => r.userId === currentUser._id)) {
+          startBtn.textContent = "Waiting for others...";
+          startBtn.disabled = true;
+        } else {
+          startBtn.textContent = "I'm Ready";
+          startBtn.disabled = false;
+        }
+      } else {
+        // Map not generated yet
+        startBtn.disabled = true;
+        startBtn.textContent = "Generating Map...";
+      }
+      // Update previousPlayers before notifications
+      const currentPrevious = [...previousPlayers];
+      // Notifications
+      if (shift.status !== 'ended') {
+        const newPlayers = shift.players.filter(p => !currentPrevious.some(pp => pp.userId === p.userId));
+        if (newPlayers.length > 0) {
+          newPlayers.forEach(newPlayer => {
+            if (newPlayer.userId === currentUser._id) {
+              // You joined
+              const host = shift.players[0];
+              showDismissableAlert(`You've joined ${host.username}'s shift`, "OK");
+            } else {
+              // Someone else joined
+              showDismissableAlert(`${newPlayer.username} has joined your shift`, "OK");
+            }
+          });
+        }
+      }
+      previousPlayers = [...shift.players];
+    }
+  });
+  socket.on('chat-message', (data) => {
+    const messagesDiv = document.getElementById('chat-messages');
+    const messageElement = document.createElement('div');
+    messageElement.textContent = `${data.username}: ${data.message}`;
+    messagesDiv.appendChild(messageElement);
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  });
+  socket.on('shift-started', () => {
+    if (!currentUser) return;
+    document.getElementById('locker-room').style.display = 'none';
+    startGame();
+  });
+  socket.on('reconnect', () => {
+    if (!currentUser) return;
+    if (currentShiftId) {
+      socket.emit('join-shift', { shiftId: currentShiftId, userId: currentUser._id });
+    }
+  });
+  socket.on('game-over', (data) => {
+    if (!currentUser) return;
+    if (data.playerId === currentUser._id) {
+      const credits = data.credits;
+      showDismissableAlert(`You earned ${credits} credits from this shift`, "OK", () => {
+        loadLockerRoomPage();
+      });
+    }
+  });
+}
+
+async function obtainShiftCode() {
+  console.log('Creating shift for userId:', currentUser._id);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  try {
+    const res = await fetch('http://localhost:3001/create-shift', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser._id }),
+      signal: controller.signal
+    });
+    if (res.ok) {
+      const data = await res.json();
+      console.log('Shift created:', data);
+      currentShiftId = data.shift.id;
+      document.getElementById('code').textContent = currentShiftId;
+      // Disable ready button until map is generated
+      const startBtn = document.getElementById('start-shift');
+      startBtn.disabled = true;
+      startBtn.textContent = "Generating Map...";
+      if (socket.connected) {
+        socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
+      } else {
+        socket.on('connect', () => {
+          socket.emit('join-shift', { shiftId: data.shift.id, userId: currentUser._id });
+        });
+      }
+      previousPlayers = [{ userId: currentUser._id, username: currentUser.username }];
+    } else {
+      throw new Error('Failed to create shift: ' + res.status);
+    }
+  } catch (err) {
+    console.error('Create shift error:', err);
+    if (err.name === 'AbortError') {
+      showDismissableAlert('Timeout generating shift', "OK");
+    } else {
+      showDismissableAlert('Error generating shift', "OK");
+    }
+  }
+}
+
+function obtainInventory() {
+  // Inventory is populated in populateToolbelt
+}
+
+function obtainSavedToolbelt() {
+  populateToolbelt();
+}
+
+function validateToolbelt() {
+  // For now, assume valid
+  return true;
+}
+
+function enableButtons() {
+  if (validateToolbelt()) {
+    document.getElementById('start-shift').disabled = false;
+    document.getElementById('join-shift-btn').disabled = false;
+  }
+}
+
+function showDismissableAlert(text, buttonText, callback) {
+  const modal = document.getElementById('alert-modal');
+  const textEl = document.getElementById('alert-text');
+  const btn = document.getElementById('alert-dismiss-btn');
+  const closeX = document.getElementById('alert-close-x');
+
+  textEl.textContent = text;
+  btn.textContent = buttonText;
+
+  modal.style.display = 'block';
+
+  const closeModal = () => {
+    modal.style.display = 'none';
+    document.removeEventListener('keydown', escHandler);
+    if (callback) callback();
+  };
+
+  const escHandler = (e) => {
+    if (e.key === 'Escape') {
+      closeModal();
+    }
+  };
+
+  document.addEventListener('keydown', escHandler);
+
+  closeX.onclick = closeModal;
+  btn.onclick = closeModal;
+}
+
+function showPauseModal() {
+  const modal = document.getElementById('pause-modal');
+  modal.style.display = 'block';
+
+  const resume = () => {
+    modal.style.display = 'none';
+    if (gameInstance && gameInstance.scene) {
+      const scene = gameInstance.scene.getScene('GameScene');
+      if (scene) {
+        scene.paused = false;
+        scene.scene.resume('GameScene');
+      }
+    }
+  };
+
+  const closeX = document.getElementById('pause-close-x');
+  const btn = document.getElementById('pause-resume-btn');
+
+  closeX.onclick = resume;
+  btn.onclick = resume;
+
+  const escHandler = (e) => {
+    if (e.key === 'Escape') {
+      resume();
+    }
+  };
+
+  document.addEventListener('keydown', escHandler);
+}
+
+function showGameMenu() {
+  const modal = document.getElementById('game-menu-modal');
+  modal.style.display = 'block';
+
+  const resume = () => {
+    modal.style.display = 'none';
+    if (gameInstance && gameInstance.scene) {
+      const scene = gameInstance.scene.getScene('GameScene');
+      if (scene) {
+        scene.paused = false;
+        scene.scene.resume('GameScene');
+      }
+    }
+  };
+
+  const forfeit = () => {
+    modal.style.display = 'none';
+    const player = window.currentShift ? window.currentShift.players.find(p => p.userId === currentUser._id) : null;
+    if (!player) return;
+    const scrapEarned = player.scrap - 200;
+    const wavesCompleted = window.currentShift.wave - 1;
+    const wasteDefeated = window.currentShift.enemiesDefeated;
+    const fullCredits = Math.floor((scrapEarned * wavesCompleted + wasteDefeated) / 100);
+    const credits = Math.floor(fullCredits * 0.8);
+    socket.emit('forfeit-shift', { shiftId: currentShiftId, userId: currentUser._id });
+    showDismissableAlert(`You earned ${credits} credits from this shift`, "OK", () => {
+      loadLockerRoomPage();
+    });
+  };
+
+  document.getElementById('menu-resume-btn').onclick = resume;
+  document.getElementById('menu-forfeit-btn').onclick = forfeit;
+}
+
 function showBoostModal(choices) {
+    if (!currentUser) return;
     const modal = document.getElementById('boost-modal');
     const optionsDiv = document.getElementById('boost-options');
     optionsDiv.innerHTML = '';
@@ -963,6 +1085,10 @@ function showBoostModal(choices) {
         button.style.height = '80px'; // Static height
         button.style.width = '30%'; // Roughly equal width
         button.style.border = `2px solid ${getRarityColor(choice.rarity)}`;
+        // One-time use boosts are yellow
+        if (choice.effect.healWeapons || choice.effect.destroyWaste || choice.effect.freezeEnemies) {
+            button.style.border = '2px solid #ffff00';
+        }
         button.style.color = 'black'; // Text remains black
         button.style.backgroundColor = 'white';
         button.style.cursor = 'pointer'; // Show clickable
