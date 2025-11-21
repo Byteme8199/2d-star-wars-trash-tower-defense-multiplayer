@@ -84,7 +84,7 @@ const projectileSchema = new mongoose.Schema({
 // Shift model for multiplayer shifts
 const shiftSchema = new mongoose.Schema({
   id: String,
-  players: [{ userId: String, username: String, x: Number, y: Number, inventory: [Object], boosts: [Object], scrap: {type: Number, default: 0}, boostChoices: Object, lastPlaced: {type: Number, default: 0}, pickupRadius: {type: Number, default: 20}, pickupThreshold: {type: Number, default: 100} }],
+  players: [{ userId: String, username: String, x: Number, y: Number, inventory: [Object], boosts: [Object], scrap: {type: Number, default: 0}, boostChoices: Object, lastPlaced: {type: Number, default: 0}, pickupRadius: {type: Number, default: 20}, pickupThreshold: {type: Number, default: 100}, previousPickupThreshold: {type: Number, default: 0} }],
   map: { type: Object, default: {} }, // e.g., path data
   wave: { type: Number, default: 1 },
   overflow: { type: Number, default: 100 },
@@ -529,6 +529,7 @@ io.on('connection', (socket) => {
           p.scrap = 0; // Starting scrap
           p.pickupRadius = 20; // Default pickup radius
           p.pickupThreshold = 100; // Boost threshold
+          p.previousPickupThreshold = 0; // Previous threshold
         });
         shift.status = 'active';
         await shift.save();
@@ -656,13 +657,14 @@ io.on('connection', (socket) => {
       if (player) {
         player.scrap += scrap.value;
         if (player.scrap >= player.pickupThreshold) {
+          player.previousPickupThreshold = player.pickupThreshold;
+          player.pickupThreshold += 100;
           const boosts = generateRandomBoosts(3);
           player.boostChoices = { id: Date.now().toString(), options: boosts };
           io.to(shiftId).emit('boost-choice', { playerId: player.userId, choices: boosts });
           if (shift.players.length === 1) {
             shift.paused = true;
           }
-          player.pickupThreshold += 100;
         }
       }
       shift.scraps = shift.scraps.filter(s => s !== scrap);
@@ -814,7 +816,7 @@ async function gameLoop(shiftId) {
                 if (boost.effect.scrapMult) scrapGain = Math.floor(scrapGain * boost.effect.scrapMult);
               });
             }
-            shift.scraps.push({ id: Date.now().toString() + Math.random(), x: nearest.x, y: nearest.y, value: scrapGain });
+            shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(800, nearest.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(600, nearest.y + (Math.random() - 0.5) * 20)), value: scrapGain });
             shift.enemiesDefeated += 1;
             shift.wave = Math.floor(shift.enemiesDefeated / 10) + 1;
             shift.enemies = shift.enemies.filter(e => e !== nearest);
@@ -880,7 +882,7 @@ async function gameLoop(shiftId) {
               if (boost.effect.scrapMult) scrapGain = Math.floor(scrapGain * boost.effect.scrapMult);
             });
           }
-          shift.scraps.push({ id: Date.now().toString() + Math.random(), x: target.x, y: target.y, value: scrapGain });
+          shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(800, target.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(600, target.y + (Math.random() - 0.5) * 20)), value: scrapGain });
           shift.enemiesDefeated += 1;
           shift.wave = Math.floor(shift.enemiesDefeated / 10) + 1;
           shift.enemies = shift.enemies.filter(e => e !== target);

@@ -486,6 +486,9 @@ class GameScene extends Phaser.Scene {
         // Boost UI
         this.boostTexts = [];
 
+        // Inputs disabled flag
+        this.inputsDisabled = false;
+
         // WASD keys
         this.wasd = {
             w: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W),
@@ -538,7 +541,7 @@ class GameScene extends Phaser.Scene {
     }
 
     update() {
-        if (this.paused) return;
+        if (this.paused || this.inputsDisabled) return;
         // Handle player movement
         if (this.player) {
             let dx = 0, dy = 0;
@@ -693,7 +696,8 @@ class GameScene extends Phaser.Scene {
         // Update scrap bar
         const bar = document.getElementById('scrap-bar');
         const maxScrap = 1000;
-        const percentage = Math.min((player.scrap / maxScrap) * 100, 100);
+        const progress = (player.scrap - player.previousPickupThreshold) / (player.pickupThreshold - player.previousPickupThreshold);
+        const percentage = Math.min(progress * 100, 100);
         bar.style.width = percentage + '%';
         document.getElementById('scrap-text').textContent = 'Scrap: ' + player.scrap;
 
@@ -716,13 +720,11 @@ class GameScene extends Phaser.Scene {
         updateGameToolbelt();
 
         // Update UI
-        document.getElementById('overflow').textContent = shift.overflow;
-        document.getElementById('wave').textContent = shift.wave;
-        document.getElementById('scrap').textContent = player.scrap;
+        // Removed: overflow, wave, scrap updates
     }
 
     placeWeapon(pointer) {
-        if (this.paused) return;
+        if (this.paused || this.inputsDisabled) return;
         if (!currentUser) return;
         if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
             currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
@@ -1170,10 +1172,22 @@ function showBoostModal(choices) {
         button.onclick = () => {
             socket.emit('choose-boost', { shiftId: currentShiftId, choiceIndex: index });
             modal.style.display = 'none';
+            if (gameInstance && gameInstance.scene) {
+                const scene = gameInstance.scene.getScene('GameScene');
+                if (scene) {
+                    scene.inputsDisabled = false;
+                }
+            }
         };
         optionsDiv.appendChild(button);
     });
     modal.style.display = 'block';
+    if (gameInstance && gameInstance.scene) {
+        const scene = gameInstance.scene.getScene('GameScene');
+        if (scene) {
+            scene.inputsDisabled = true;
+        }
+    }
 }
 
 function getRarityColor(rarity) {
