@@ -463,6 +463,9 @@ class GameScene extends Phaser.Scene {
         this.players = this.add.group();
         this.projectiles = this.add.group();
 
+        // Player sprites map
+        this.playerSprites = {};
+
         // Movement throttling
         this.lastMoveEmit = 0;
 
