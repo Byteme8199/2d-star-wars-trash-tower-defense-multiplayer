@@ -1057,11 +1057,14 @@ function showGameMenu() {
     modal.style.display = 'none';
     const player = window.currentShift ? window.currentShift.players.find(p => p.userId === currentUser._id) : null;
     if (!player) return;
-    const scrapEarned = player.scrap - 200;
+    const scrapEarned = player.scrap - 0;
     const wavesCompleted = window.currentShift.wave - 1;
     const wasteDefeated = window.currentShift.enemiesDefeated;
     const fullCredits = Math.floor((scrapEarned * wavesCompleted + wasteDefeated) / 100);
-    const credits = Math.floor(fullCredits * 0.8);
+    let credits = Math.floor(fullCredits * 0.8);
+    if (window.currentShift.players.length > 1) {
+      credits = Math.floor(credits * 1.1);
+    }
     socket.emit('forfeit-shift', { shiftId: currentShiftId, userId: currentUser._id });
     showDismissableAlert(`You earned ${credits} credits from this shift`, "OK", () => {
       loadLockerRoomPage();

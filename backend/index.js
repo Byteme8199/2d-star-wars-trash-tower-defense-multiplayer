@@ -517,7 +517,7 @@ io.on('connection', (socket) => {
             p.inventory = toolbelt.map(type => generateWeapon(type));
           }
           p.boosts = []; // Start with no boosts
-          p.scrap = 200; // Starting scrap
+          p.scrap = 0; // Starting scrap
         });
         shift.status = 'active';
         await shift.save();
@@ -631,10 +631,13 @@ io.on('connection', (socket) => {
     if (!shift) return;
     const player = shift.players.find(p => p.userId === userId);
     if (!player) return;
-    const scrapEarned = player.scrap - 200;
+    const scrapEarned = player.scrap - 0;
     const wavesCompleted = shift.wave - 1;
     const fullCredits = Math.floor((scrapEarned * wavesCompleted + shift.enemiesDefeated) / 100);
-    const credits = Math.floor(fullCredits * 0.8);
+    let credits = Math.floor(fullCredits * 0.8);
+    if (shift.players.length > 1) {
+      credits = Math.floor(credits * 1.1);
+    }
     const user = await User.findById(userId);
     if (user) {
       user.credits += credits;
@@ -674,7 +677,7 @@ async function gameLoop(shiftId) {
 
   // Ensure scrap is set
   shift.players.forEach(player => {
-    if (player.scrap === 0) player.scrap = 200;
+    if (typeof player.scrap !== 'number' || isNaN(player.scrap)) player.scrap = 0;
   });
 
   // Spawn enemies
@@ -876,9 +879,12 @@ async function gameLoop(shiftId) {
     shift.players.forEach(p => p.boostChoices = null);
     // Calculate credits for each player
     for (const player of shift.players) {
-      const scrapEarned = player.scrap - 200;
+      const scrapEarned = player.scrap - 0;
       const wavesCompleted = shift.wave - 1;
-      const credits = Math.floor((scrapEarned * wavesCompleted + shift.enemiesDefeated) / 100);
+      let credits = Math.floor((scrapEarned * wavesCompleted + shift.enemiesDefeated) / 100);
+      if (shift.players.length > 1) {
+        credits = Math.floor(credits * 1.1);
+      }
       const user = await User.findById(player.userId);
       if (user) {
         user.credits += credits;
