@@ -476,6 +476,9 @@ class GameScene extends Phaser.Scene {
         // Scrap group
         this.scraps = this.add.group();
 
+        // Collecting scrap IDs
+        this.collectingScrapIds = new Set();
+
         // Position maps
         this.weaponPositions = {};
         this.enemyPositions = {};
@@ -569,8 +572,32 @@ class GameScene extends Phaser.Scene {
           if (playerData) {
             window.currentShift.scraps.forEach(s => {
               const dist = Math.sqrt((this.player.x - s.x)**2 + (this.player.y - s.y)**2);
-              if (dist < playerData.pickupRadius) {
-                socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
+              if (dist < playerData.pickupRadius && !this.collectingScrapIds.has(s.id)) {
+                this.collectingScrapIds.add(s.id);
+                const sprite = this.scraps.children.entries.find(child => Math.abs(child.x - s.x) < 1 && Math.abs(child.y - s.y) < 1);
+                if (sprite) {
+                  this.tweens.add({
+                    targets: sprite,
+                    x: this.player.x,
+                    y: this.player.y,
+                    duration: 300,
+                    ease: 'Linear',
+                    onComplete: () => {
+                      this.tweens.add({
+                        targets: sprite,
+                        x: 400,
+                        y: 520,
+                        duration: 300,
+                        ease: 'Linear',
+                        onComplete: () => {
+                          sprite.destroy();
+                          socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: s.id });
+                          this.collectingScrapIds.delete(s.id);
+                        }
+                      });
+                    }
+                  });
+                }
               }
             });
           }
@@ -673,14 +700,16 @@ class GameScene extends Phaser.Scene {
         // Update scraps
         this.scraps.clear(true, true);
         shift.scraps.forEach(s => {
-          let scrap = this.add.circle(s.x, s.y, 5, 0x0000ff);
-          this.scraps.add(scrap);
-          this.tweens.add({
-            targets: scrap,
-            y: s.y + 10,
-            duration: 300,
-            ease: 'Bounce.easeOut'
-          });
+          if (!this.collectingScrapIds.has(s.id)) {
+            let scrap = this.add.circle(s.x, s.y, 5, 0x0000ff);
+            this.scraps.add(scrap);
+            this.tweens.add({
+              targets: scrap,
+              y: s.y + 10,
+              duration: 300,
+              ease: 'Bounce.easeOut'
+            });
+          }
         });
 
         // Update toolbelt
@@ -689,7 +718,7 @@ class GameScene extends Phaser.Scene {
         // Update UI
         document.getElementById('overflow').textContent = shift.overflow;
         document.getElementById('wave').textContent = shift.wave;
-        document.getElementById('scrap').textContent = shift.scrap;
+        document.getElementById('scrap').textContent = player.scrap;
     }
 
     placeWeapon(pointer) {
