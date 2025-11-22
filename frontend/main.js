@@ -405,6 +405,7 @@ class GameScene extends Phaser.Scene {
         // Load assets here (e.g., this.load.image('tower', 'assets/tower.png');)
         this.load.spritesheet('conveyor-belt', 'assets/conveyor-belt.png', { frameWidth: 10, frameHeight: 10 });
         this.load.image('waste', 'assets/waste-01.png');
+        this.load.image('scrap', 'assets/scrap.png');
     }
 
     create() {
@@ -478,8 +479,8 @@ class GameScene extends Phaser.Scene {
         // Boost UI
         this.boostTexts = [];
 
-        // Inputs disabled flag
-        this.inputsDisabled = false;
+        // Hover weapon id
+        this.hoveredWeaponId = null;
 
         // WASD keys
         this.wasd = {
@@ -709,7 +710,7 @@ class GameScene extends Phaser.Scene {
         this.scraps.clear(true, true);
         shift.scraps.forEach(s => {
           if (!this.collectingScrapIds.has(s.id)) {
-            let scrap = this.add.circle(s.x, s.y, 5, 0xffffff);
+            let scrap = this.add.sprite(s.x, s.y, 'scrap');
             this.scraps.add(scrap);
             this.tweens.add({
               targets: scrap,
@@ -732,17 +733,9 @@ class GameScene extends Phaser.Scene {
         if (!currentUser) return;
         if (pointer.button === 2) {
             if (!currentShiftId) return;
-            // Destroy weapon at position
-            const gx = Math.floor(pointer.x / this.cellSize);
-            const gy = Math.floor(pointer.y / this.cellSize);
-            for (let [id, pos] of Object.entries(this.weaponPositions)) {
-                const gridSize = WEAPON_GRID_SIZES[pos.type] || {w:1,h:1};
-                const wx = Math.floor(pos.x / this.cellSize) - Math.floor(gridSize.w / 2);
-                const wy = Math.floor(pos.y / this.cellSize) - Math.floor(gridSize.h / 2);
-                if (gx >= wx && gx < wx + gridSize.w && gy >= wy && gy < wy + gridSize.h) {
-                    socket.emit('destroy-weapon', { shiftId: currentShiftId, weaponId: id, userId: currentUser._id });
-                    break;
-                }
+            if (this.hoveredWeaponId) {
+                console.log('Destroying weapon:', this.weaponPositions[this.hoveredWeaponId]);
+                socket.emit('destroy-weapon', { shiftId: currentShiftId, weaponId: this.hoveredWeaponId, userId: currentUser._id });
             }
             return;
         }
@@ -819,6 +812,18 @@ class GameScene extends Phaser.Scene {
         this.hoverGraphics.strokeRect(x - width / 2, y - height / 2, width, height);
         this.hoverGraphics.fillStyle(valid ? 0x00ff00 : 0xff0000, 0.3);
         this.hoverGraphics.fillRect(x - width / 2, y - height / 2, width, height);
+
+        // Check for hovered weapon
+        this.hoveredWeaponId = null;
+        for (let [id, pos] of Object.entries(this.weaponPositions)) {
+            const gridSize = WEAPON_GRID_SIZES[pos.type] || {w:1,h:1};
+            const wx = Math.floor(pos.x / this.cellSize) - Math.floor(gridSize.w / 2);
+            const wy = Math.floor(pos.y / this.cellSize) - Math.floor(gridSize.h / 2);
+            if (gx >= wx && gx < wx + gridSize.w && gy >= wy && gy < wy + gridSize.h) {
+                this.hoveredWeaponId = id;
+                break;
+            }
+        }
     }
 }
 

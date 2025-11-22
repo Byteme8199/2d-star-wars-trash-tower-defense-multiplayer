@@ -731,10 +731,16 @@ async function gameLoop(shiftId) {
   // Spawn enemies
   if (Math.random() < 0.02) { // 2% chance per frame to spawn (~1.2 per second at 60 FPS)
     const startSquare = shift.map.pathSquares[0];
+    let enemyX = startSquare.x * 10 + 5;
+    let enemyY = startSquare.y * 10 + 5;
+    if (isNaN(enemyX) || isNaN(enemyY)) {
+      enemyX = 5;
+      enemyY = 305;
+    }
     shift.enemies.push({
       id: Date.now().toString(),
-      x: startSquare.x * 10 + 5,
-      y: startSquare.y * 10 + 5,
+      x: enemyX,
+      y: enemyY,
       pathIndex: 0,
       health: 100 + (shift.wave - 1) * 20
     });
@@ -742,6 +748,10 @@ async function gameLoop(shiftId) {
 
   // Simulate enemies moving along path
   shift.enemies.forEach(enemy => {
+    if (isNaN(enemy.x) || isNaN(enemy.y)) {
+      shift.enemies = shift.enemies.filter(e => e !== enemy);
+      return;
+    }
     if (Date.now() < shift.freezeEnd) return; // Frozen
     let nextIndex = enemy.pathIndex + 1;
     if (nextIndex < shift.map.pathSquares.length) {
