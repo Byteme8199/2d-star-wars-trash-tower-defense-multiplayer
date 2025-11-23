@@ -18,11 +18,70 @@ var currentShiftId = null;
 var previousPlayers = [];
 var selectedIndex = 0;
 
-const WEAPON_GRID_SIZES = {
-  'pressure-washer': {w:1,h:1},
-  'missile-launcher': {w:2,h:2},
-  'laser-cutter': {w:1,h:3},
-  'waste-escape-pod': {w:4,h:4}
+const WEAPON_TYPES = {
+  'pressure-washer': {
+    name: 'Pressure Washer',
+    description: 'Shoots high-pressure water stream, damages and cools nearby weapons.',
+    baseStats: { power: 50, cooldown: 1000, range: 50, shape: 'cone', gridSize: {w:1,h:1}, heatGen: 10, heatResist: 10, hp: 100, cost: 0, knockback: 1 },
+    color: 0x00ff00,
+    cost: 0
+  },
+  'missile-launcher': {
+    name: 'Missile Launcher',
+    description: 'Launches 3 homing missiles that track enemies.',
+    baseStats: { power: 100, cooldown: 3000, range: 180, shape: 'missile', gridSize: {w:2,h:2}, heatGen: 15, heatResist: 5, hp: 120, cost: 500, knockback: 2 },
+    color: 0xff0000,
+    cost: 500
+  },
+  'laser-cutter': {
+    name: 'Laser Cutter',
+    description: 'Cuts through waste with a powerful laser beam.',
+    baseStats: { power: 30, cooldown: 800, range: 60, shape: 'line', gridSize: {w:1,h:3}, heatGen: 5, heatResist: 8, hp: 80, cost: 1000, knockback: 1 },
+    color: 0xffff00,
+    cost: 1000
+  },
+  'waste-escape-pod': {
+    name: 'Waste Escape Pod',
+    description: 'A large pod that destroys waste on contact.',
+    baseStats: { power: 10, cooldown: 2000, range: 30, shape: 'circle', gridSize: {w:4,h:4}, heatGen: 2, heatResist: 15, hp: 150, cost: 2000, knockback: 3 },
+    color: 0xff00ff,
+    cost: 2000
+  }
+};
+
+const RARITY_MULTIPLIERS = {
+  common: 1.0,
+  uncommon: 1.1,
+  rare: 1.2,
+  mythic: 1.4,
+  legendary: 1.6
+};
+
+function getWeaponStats(type, rarity) {
+  const base = WEAPON_TYPES[type].baseStats || WEAPON_TYPES[type].stats;
+  const mult = RARITY_MULTIPLIERS[rarity];
+  return {
+    power: Math.floor(base.power * mult),
+    cooldown: Math.floor(base.cooldown / mult), // Faster for higher rarity
+    range: base.range,
+    shape: base.shape,
+    gridSize: base.gridSize,
+    heatGen: base.heatGen,
+    heatResist: Math.floor(base.heatResist * mult),
+    hp: Math.floor(base.hp * mult),
+    cost: base.cost,
+    knockback: Math.floor((base.knockback || 1) * mult)
+  };
+}
+
+const WEAPON_GRID_SIZES = Object.fromEntries(Object.entries(WEAPON_TYPES).map(([k,v]) => [k, v.gridSize]));
+
+const ENEMY_TYPES = {
+  'waste': {
+    name: 'Waste',
+    description: 'Basic waste enemy that follows the path.',
+    stats: { hp: 50, speed: 1, damage: 10 }
+  }
 };
 
 // Check for existing token on page load
@@ -186,6 +245,15 @@ document.getElementById('close-boosts-modal').addEventListener('click', () => {
   }
 });
 
+document.getElementById('licenses-btn').addEventListener('click', () => {
+  if (!currentUser) return;
+  showLicensesModal();
+});
+
+document.getElementById('close-licenses-modal').addEventListener('click', () => {
+  document.getElementById('licenses-modal').style.display = 'none';
+});
+
 function populateToolbelt() {
   if (!currentUser) return;
   const inventoryItems = document.getElementById('inventory-items');
@@ -194,19 +262,19 @@ function populateToolbelt() {
     return;
   }
   inventoryItems.innerHTML = '';
-  const availableWeapons = ['pressure-washer', 'missile-launcher']; // Always available
-  availableWeapons.forEach(type => {
-    const item = document.createElement('div');
-    item.className = 'inventory-item';
-    item.draggable = true;
-    item.textContent = getWeaponIcon(type);
-    item.style.borderColor = '#00ff00'; // Default green for common
-    item.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/plain', type);
+  const inventory = currentUser.inventory || [];
+  inventory.forEach(item => {
+    const itemDiv = document.createElement('div');
+    itemDiv.className = 'inventory-item';
+    itemDiv.draggable = true;
+    itemDiv.textContent = getWeaponIcon(item.type);
+    itemDiv.style.borderColor = getRarityColor(item.rarity);
+    itemDiv.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', item.id);
     });
-    item.addEventListener('mouseover', (e) => showItemModal(type, e));
-    item.addEventListener('mouseout', () => hideItemModal());
-    inventoryItems.appendChild(item);
+    itemDiv.addEventListener('mouseover', (e) => showItemModal(item, e));
+    itemDiv.addEventListener('mouseout', () => hideItemModal());
+    inventoryItems.appendChild(itemDiv);
   });
 
   const toolbeltSlots = document.getElementById('toolbelt-slots');
@@ -216,29 +284,36 @@ function populateToolbelt() {
   }
   toolbeltSlots.innerHTML = '';
   let toolbelt = currentUser.toolbelt || [];
-  if (toolbelt.length === 0) {
-    toolbelt = ['pressure-washer'];
-  }
   for (let i = 0; i < 6; i++) {
     const slot = document.createElement('div');
     slot.className = 'toolbelt-slot';
-    slot.textContent = toolbelt[i] ? getWeaponIcon(toolbelt[i]) : '';
-    slot.dataset.type = toolbelt[i] || '';
+    const itemId = toolbelt[i];
+    const item = currentUser.inventory.find(inv => inv.id === itemId);
+    slot.style.borderColor = item ? getRarityColor(item.rarity) : getRarityColor('common');
+    slot.textContent = item ? getWeaponIcon(item.type) : '';
+    slot.dataset.type = item ? item.type : '';
     if (i === selectedIndex) slot.classList.add('selected');
     slot.addEventListener('dragover', (e) => e.preventDefault());
     slot.addEventListener('drop', (e) => {
       e.preventDefault();
-      const type = e.dataTransfer.getData('text/plain');
-      slot.textContent = getWeaponIcon(type);
-      slot.dataset.type = type;
-      toolbelt[i] = type;
+      const id = e.dataTransfer.getData('text/plain');
+      const draggedItem = currentUser.inventory.find(inv => inv.id === id);
+      if (draggedItem) {
+        toolbelt[i] = draggedItem.id;
+        slot.textContent = getWeaponIcon(draggedItem.type);
+        slot.dataset.type = draggedItem.type;
+        slot.style.borderColor = getRarityColor(draggedItem.rarity);
+        socket.emit('save-toolbelt', { userId: currentUser._id, toolbelt });
+      }
     });
     slot.addEventListener('click', () => {
       selectedIndex = i;
       updateToolbeltSelection();
     });
     slot.addEventListener('mouseover', (e) => {
-      if (toolbelt[i]) showItemModal(toolbelt[i], e);
+      const itemId = toolbelt[i];
+      const item = currentUser.inventory.find(inv => inv.id === itemId);
+      showItemModal(item, e);
     });
     slot.addEventListener('mouseout', () => hideItemModal());
     toolbeltSlots.appendChild(slot);
@@ -248,18 +323,52 @@ function populateToolbelt() {
 function getWeaponIcon(type) {
   const icons = {
     'pressure-washer': 'PW',
-    'missile-launcher': 'ML'
+    'missile-launcher': 'ML',
+    'laser-cutter': 'LC',
+    'waste-escape-pod': 'WEP'
   };
   return icons[type] || type;
 }
 
-function showItemModal(type, event) {
+function showItemModal(itemOrType, event) {
   const modal = document.getElementById('item-modal');
-  const descriptions = {
-    'pressure-washer': 'Pressure Washer: Shoots high-pressure water stream, damages and cools nearby weapons. Power: 30, Cooldown: 1000ms, Range: 50',
-    'missile-launcher': 'Missile Launcher: Launches 3 homing missiles that track enemies. Power: 50, Cooldown: 3000ms, Range: 80'
-  };
-  modal.textContent = descriptions[type] || type;
+  let text = '';
+  let item;
+  if (typeof itemOrType === 'string') {
+    // Create a fake item object for base weapon types
+    const weapon = WEAPON_TYPES[itemOrType];
+    if (weapon) {
+      item = {
+        type: itemOrType,
+        rarity: 'common',
+        stats: weapon.baseStats
+      };
+    } else {
+      text = itemOrType;
+    }
+  } else {
+    // Item instance
+    item = itemOrType;
+  }
+  if (item) {
+    const base = WEAPON_TYPES[item.type];
+    if (base) {
+      const baseStats = base.baseStats;
+      const diffPower = item.stats.power - baseStats.power;
+      const diffCooldown = item.stats.cooldown - baseStats.cooldown;
+      const diffRange = item.stats.range - baseStats.range;
+      const diffHp = item.stats.hp - baseStats.hp;
+      const diffStrPower = diffPower > 0 ? ` <span style="color: green;">(+${diffPower})</span>` : diffPower < 0 ? ` <span style="color: red;">(${diffPower})</span>` : '';
+      const diffStrCooldown = diffCooldown < 0 ? ` <span style="color: green;">(${diffCooldown})</span>` : diffCooldown > 0 ? ` <span style="color: red;">(+${diffCooldown})</span>` : '';
+      const diffStrRange = diffRange > 0 ? ` <span style="color: green;">(+${diffRange})</span>` : diffRange < 0 ? ` <span style="color: red;">(${diffRange})</span>` : '';
+      const diffStrHp = diffHp > 0 ? ` <span style="color: green;">(+${diffHp})</span>` : diffHp < 0 ? ` <span style="color: red;">(${diffHp})</span>` : '';
+      text = `${base.name} (${item.rarity}): ${base.description}<br>Power: ${item.stats.power}${diffStrPower}<br>Cooldown: ${item.stats.cooldown}ms${diffStrCooldown}<br>Range: ${item.stats.range}${diffStrRange}<br>HP: ${item.stats.hp}${diffStrHp}`;
+    } else {
+      text = item.type;
+    }
+  }
+  modal.innerHTML = text.replace(/\n/g, '<br>');
+  modal.style.borderColor = getRarityColor(item.rarity);
   modal.style.left = event.pageX + 10 + 'px';
   modal.style.top = (event.pageY - 100) + 'px';
   modal.style.display = 'block';
@@ -271,9 +380,6 @@ function hideItemModal() {
 
 function updateGameToolbelt() {
   if (!currentUser) return;
-  if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-    currentUser.toolbelt = ['pressure-washer'];
-  }
   const slots = document.getElementById('game-toolbelt-slots');
   slots.innerHTML = '';
   const toolbelt = currentUser.toolbelt || [];
@@ -285,18 +391,23 @@ function updateGameToolbelt() {
   for (let i = 0; i < 6; i++) {
     const slot = document.createElement('div');
     slot.className = 'game-toolbelt-slot';
-    slot.textContent = toolbelt[i] ? getWeaponIcon(toolbelt[i]) : '';
-    slot.dataset.type = toolbelt[i] || '';
+    const itemId = toolbelt[i];
+    const item = currentUser.inventory.find(inv => inv.id === itemId);
+    slot.style.borderColor = item ? getRarityColor(item.rarity) : getRarityColor('common');
+    slot.textContent = item ? getWeaponIcon(item.type) : '';
+    slot.dataset.type = item ? item.type : '';
     if (i === selectedIndex) slot.classList.add('selected');
     slot.addEventListener('pointerdown', () => {
-      if (toolbelt[i]) {
+      if (item) {
         selectedIndex = i;
         updateToolbeltSelection();
         updateGameToolbelt();
       }
     });
     slot.addEventListener('mouseover', (e) => {
-      if (toolbelt[i]) showItemModal(toolbelt[i], e);
+      const itemId = toolbelt[i];
+      const item = currentUser.inventory.find(inv => inv.id === itemId);
+      showItemModal(item, e);
     });
     slot.addEventListener('mouseout', () => hideItemModal());
     if (timeLeft > 0) {
@@ -338,15 +449,44 @@ function updateToolbeltSelection() {
   });
 }
 
-document.getElementById('save-toolbelt').addEventListener('click', () => {
+document.getElementById('gacha-btn').addEventListener('click', () => {
   if (!currentUser) return;
-  const toolbelt = [];
-  document.querySelectorAll('.toolbelt-slot').forEach(slot => {
-    if (slot.dataset.type) toolbelt.push(slot.dataset.type);
-  });
-  socket.emit('save-toolbelt', { userId: currentUser._id, toolbelt });
-  currentUser.toolbelt = toolbelt; // Update local
-  populateToolbelt(); // Refresh display
+  const modal = document.getElementById('gacha-modal');
+  modal.style.display = 'block';
+});
+
+document.getElementById('close-gacha-modal').addEventListener('click', () => {
+  document.getElementById('gacha-modal').style.display = 'none';
+});
+
+document.getElementById('spin-gacha-btn').addEventListener('click', async () => {
+  if (!currentUser) return;
+  if (currentUser.credits < 100) {
+    showDismissableAlert('Not enough credits!', 'OK');
+    return;
+  }
+  try {
+    const res = await fetch('http://localhost:3001/spin-gacha', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser._id })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      currentUser.credits = data.credits;
+      currentUser.inventory = currentUser.inventory || [];
+      currentUser.inventory.push(data.weapon);
+      document.getElementById('nav-credits').textContent = currentUser.credits;
+      populateToolbelt(); // Refresh inventory
+      document.getElementById('gacha-modal').style.display = 'none';
+      showDismissableAlert(`You got a ${data.weapon.rarity} ${WEAPON_TYPES[data.weapon.type].name}!`, 'OK');
+    } else {
+      const err = await res.json();
+      showDismissableAlert(err.message, 'OK');
+    }
+  } catch (error) {
+    showDismissableAlert('Gacha failed: ' + error.message, 'OK');
+  }
 });
 
 // Disable right-click context menu
@@ -388,6 +528,35 @@ document.addEventListener('keydown', (e) => {
 
 function startGame() {
   if (gameInstance) return; // Prevent multiple instances
+  let container = document.getElementById('game-container');
+  let w = window.innerWidth;
+  let h = window.innerHeight;
+  let aspect = w / h;
+  let gameW, gameH;
+  if (aspect > 4/3) {
+    // Wider screen, fit height to 4:3
+    gameW = h * 4 / 3;
+    gameH = h;
+  } else {
+    // Taller screen, fit width to 4:3
+    gameW = w;
+    gameH = w * 3 / 4;
+  }
+  container.style.width = gameW + 'px';
+  container.style.height = gameH + 'px';
+  const config = {
+    type: Phaser.AUTO,
+    width: gameW,
+    height: gameH,
+    parent: 'game-container',
+    scene: GameScene,
+    physics: {
+      default: 'arcade',
+      arcade: {
+        debug: false
+      }
+    }
+  };
   gameInstance = new Phaser.Game(config);
   document.getElementById('game-container').style.display = 'block';
   document.getElementById('toolbelt-ui').style.display = 'block';
@@ -409,17 +578,18 @@ class GameScene extends Phaser.Scene {
     }
 
     create() {
+        // Calculate scale based on canvas size and shift world dimensions
+        this.gameScale = this.game.canvas.width / window.currentShift.worldWidth;
+        this.cellSize = window.currentShift.cellSize * this.gameScale;
+        this.gridWidth = window.currentShift.gridWidth;
+        this.gridHeight = window.currentShift.gridHeight;
+
         // Set background color
         this.cameras.main.setBackgroundColor('#000011');
 
         // Set world bounds
-        this.physics.world.setBounds(0, 0, 800, 600);
-
-        // Grid settings
-        this.cellSize = 10;
-        this.gridWidth = 80;
-        this.gridHeight = 60;
-        this.pathSquares = new Set();
+        this.physics.world.setBounds(0, 0, this.game.canvas.width, this.game.canvas.height);
+        this.cameras.main.setBounds(0, 0, this.game.canvas.width, this.game.canvas.height);
 
         // Pause flag
         this.paused = false;
@@ -429,6 +599,9 @@ class GameScene extends Phaser.Scene {
 
         // Path sprites group
         this.pathSprites = this.add.group();
+
+        // Path squares set
+        this.pathSquares = new Set();
 
         // Create conveyor belt animation
         this.anims.create({
@@ -441,11 +614,11 @@ class GameScene extends Phaser.Scene {
         // Graphics for grid
         this.gridGraphics = this.add.graphics();
         this.gridGraphics.lineStyle(1, 0x121212); // Gray color
-        for (let x = 0; x <= 800; x += this.cellSize) {
-            this.gridGraphics.lineBetween(x, 0, x, 600);
+        for (let x = 0; x <= this.game.canvas.width; x += this.cellSize) {
+            this.gridGraphics.lineBetween(x, 0, x, this.game.canvas.height);
         }
-        for (let y = 0; y <= 600; y += this.cellSize) {
-            this.gridGraphics.lineBetween(0, y, 800, y);
+        for (let y = 0; y <= this.game.canvas.height; y += this.cellSize) {
+            this.gridGraphics.lineBetween(0, y, this.game.canvas.width, y);
         }
 
         // Initialize groups
@@ -461,7 +634,7 @@ class GameScene extends Phaser.Scene {
         this.lastMoveEmit = 0;
 
         // Heat text
-        this.heatText = this.add.text(700, 10, 'Heat: 0', { fontSize: '16px', fill: '#fff' });
+        this.heatText = this.add.text(this.game.canvas.width - 100, 10, 'Heat: 0', { fontSize: '16px', fill: '#fff' });
 
         // Scrap group
         this.scraps = this.add.group();
@@ -501,14 +674,14 @@ class GameScene extends Phaser.Scene {
             const epos = this.enemyPositions[data.targetId];
             if (wpos && epos) {
                 const line = this.add.graphics();
-                line.lineStyle(5, 0xff0000);
-                line.lineBetween(wpos.x, wpos.y, epos.x, epos.y);
+                line.lineStyle(5 * this.gameScale, 0xff0000);
+                line.lineBetween(wpos.x * this.gameScale, wpos.y * this.gameScale, epos.x * this.gameScale, epos.y * this.gameScale);
                 this.projectiles.add(line);
                 this.time.delayedCall(1000, () => {
                     line.destroy();
                 });
                 // Show damage number
-                const damageText = this.add.text(epos.x, epos.y - 10, `-${data.damage}`, { fontSize: '16px', fill: '#ff0000' });
+                const damageText = this.add.text(epos.x * this.gameScale, epos.y * this.gameScale - 10 * this.gameScale, `-${data.damage}`, { fontSize: `${16 * this.gameScale}px`, fill: '#ff0000' });
                 this.time.delayedCall(500, () => {
                     damageText.destroy();
                 });
@@ -538,26 +711,37 @@ class GameScene extends Phaser.Scene {
         // Handle player movement
         if (this.player) {
             let dx = 0, dy = 0;
-            if (this.wasd.a.isDown) dx -= 2;
-            if (this.wasd.d.isDown) dx += 2;
-            if (this.wasd.w.isDown) dy -= 2;
-            if (this.wasd.s.isDown) dy += 2;
+            if (this.wasd.a.isDown) dx -= 1.5 * this.gameScale;
+            if (this.wasd.d.isDown) dx += 1.5 * this.gameScale;
+            if (this.wasd.w.isDown) dy -= 1.5 * this.gameScale;
+            if (this.wasd.s.isDown) dy += 1.5 * this.gameScale;
             if (dx || dy) {
                 let newX = this.player.x + dx;
                 let newY = this.player.y + dy;
                 // Clamp to bounds
-                newX = Phaser.Math.Clamp(newX, 0, 780);
-                newY = Phaser.Math.Clamp(newY, 0, 580);
+                newX = Phaser.Math.Clamp(newX, 0, this.game.canvas.width - 10 * this.gameScale);
+                newY = Phaser.Math.Clamp(newY, 0, this.game.canvas.height - 10 * this.gameScale);
                 // Check if new position is on path
                 let gx = Math.floor(newX / this.cellSize);
                 let gy = Math.floor(newY / this.cellSize);
                 if (!this.pathSquares.has(`${gx},${gy}`)) {
-                    this.player.x = newX;
-                    this.player.y = newY;
-                    const now = Date.now();
-                    if (now - this.lastMoveEmit > 100) {
-                        socket.emit('move', { shiftId: currentShiftId, x: this.player.x, y: this.player.y, userId: currentUser._id });
-                        this.lastMoveEmit = now;
+                    // Check collision with weapons
+                    let playerRect = new Phaser.Geom.Rectangle(newX - 5 * this.gameScale, newY - 5 * this.gameScale, 10 * this.gameScale, 10 * this.gameScale);
+                    let canMove = true;
+                    this.weapons.children.entries.forEach(weapon => {
+                        let weaponRect = new Phaser.Geom.Rectangle(weapon.x - weapon.width / 2, weapon.y - weapon.height / 2, weapon.width, weapon.height);
+                        if (Phaser.Geom.Rectangle.Overlaps(playerRect, weaponRect)) {
+                            canMove = false;
+                        }
+                    });
+                    if (canMove) {
+                        this.player.x = newX;
+                        this.player.y = newY;
+                        const now = Date.now();
+                        if (now - this.lastMoveEmit > 50) {
+                            socket.emit('move', { shiftId: currentShiftId, x: this.player.x / this.gameScale, y: this.player.y / this.gameScale, userId: currentUser._id });
+                            this.lastMoveEmit = now;
+                        }
                     }
                 }
             }
@@ -567,13 +751,13 @@ class GameScene extends Phaser.Scene {
           const playerData = window.currentShift.players.find(p => p.userId === currentUser._id);
           if (playerData) {
             window.currentShift.scraps.forEach(s => {
-              const dist = Math.sqrt((this.player.x - s.x)**2 + (this.player.y - s.y)**2);
-              if (dist < playerData.pickupRadius && !this.collectingScrapIds.has(s.id)) {
+              const dist = Math.sqrt((this.player.x - s.x * this.gameScale)**2 + (this.player.y - s.y * this.gameScale)**2);
+              if (dist < playerData.pickupRadius * this.gameScale && !this.collectingScrapIds.has(s.id)) {
                 this.collectingScrapIds.add(s.id);
                 const sprite = this.scraps.children.entries.find(child => {
-                  const dx = child.x - s.x;
-                  const dy = child.y - s.y;
-                  return dx * dx + dy * dy < 25; // within ~5 pixels
+                  const dx = child.x - s.x * this.gameScale;
+                  const dy = child.y - s.y * this.gameScale;
+                  return dx * dx + dy * dy < (25 * this.gameScale * this.gameScale); // within ~5 pixels scaled
                 });
                 if (sprite) {
                   sprite.scrapId = s.id;
@@ -592,9 +776,9 @@ class GameScene extends Phaser.Scene {
           const dx = this.player.x - sprite.x;
           const dy = this.player.y - sprite.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist > 10) {
-            sprite.x += (dx / dist) * 8; // speed
-            sprite.y += (dy / dist) * 8;
+          if (dist > 10 * this.gameScale) {
+            sprite.x += (dx / dist) * 8 * this.gameScale; // speed
+            sprite.y += (dy / dist) * 8 * this.gameScale;
           } else {
             // Close enough, collect
             socket.emit('collect-scrap', { shiftId: currentShiftId, scrapId: sprite.scrapId });
@@ -614,14 +798,15 @@ class GameScene extends Phaser.Scene {
             // Draw path
             this.pathSprites.clear(true, true);
             shift.map.pathSquares.forEach((square, index) => {
-                const sprite = this.add.sprite(square.x * this.cellSize + 5, square.y * this.cellSize + 5, 'conveyor-belt');
+                const sprite = this.add.sprite(square.x * this.cellSize + this.cellSize / 2, square.y * this.cellSize + this.cellSize / 2, 'conveyor-belt');
+                sprite.setScale(this.gameScale);
                 sprite.play('conveyor-move');
                 this.pathSprites.add(sprite);
             });
             // Create enemy path
-            this.enemyPath = new Phaser.Curves.Path(shift.map.startPos.x * this.cellSize + 5, shift.map.startPos.y * this.cellSize + 5);
+            this.enemyPath = new Phaser.Curves.Path(shift.map.startPos.x * this.cellSize + this.cellSize / 2, shift.map.startPos.y * this.cellSize + this.cellSize / 2);
             shift.map.pathSquares.forEach(square => {
-                this.enemyPath.lineTo(square.x * this.cellSize + 5, square.y * this.cellSize + 5);
+                this.enemyPath.lineTo(square.x * this.cellSize + this.cellSize / 2, square.y * this.cellSize + this.cellSize / 2);
             });
         }
 
@@ -629,19 +814,20 @@ class GameScene extends Phaser.Scene {
         shift.players.forEach(p => {
             if (p.userId === currentUser._id) {
                 if (!this.player) {
-                    this.player = this.add.rectangle(p.x, p.y, 10, 10, 0x00ff00);
+                    this.player = this.add.rectangle(p.x * this.gameScale, p.y * this.gameScale, 10 * this.gameScale, 10 * this.gameScale, 0x00ff00);
                     this.physics.add.existing(this.player);
                     this.player.body.setCollideWorldBounds(true);
                 }
+                // Don't update own position to prevent snapping
             } else {
                 if (!this.playerSprites[p.userId]) {
-                    let rect = this.add.rectangle(p.x, p.y, 10, 10, 0xffffff);
+                    let rect = this.add.rectangle(p.x * this.gameScale, p.y * this.gameScale, 10 * this.gameScale, 10 * this.gameScale, 0xffffff);
                     this.physics.add.existing(rect);
                     rect.body.setCollideWorldBounds(true);
                     this.playerSprites[p.userId] = rect;
                 } else {
-                    this.playerSprites[p.userId].x = p.x;
-                    this.playerSprites[p.userId].y = p.y;
+                    this.playerSprites[p.userId].x = p.x * this.gameScale;
+                    this.playerSprites[p.userId].y = p.y * this.gameScale;
                 }
             }
         });
@@ -664,21 +850,20 @@ class GameScene extends Phaser.Scene {
 
         // Add enemies
         shift.enemies.forEach(e => {
-            let enemy = this.add.sprite(e.x, e.y, 'waste');
+            let enemy = this.add.sprite(e.x * this.gameScale, e.y * this.gameScale, 'waste');
+            enemy.setScale(this.gameScale);
             this.enemies.add(enemy);
         });
 
         // Add weapons
         shift.weapons.forEach(w => {
-            let color = 0x0000ff; // default
-            if (w.type === 'pressure-washer') color = 0x00ff00;
-            else if (w.type === 'missile-launcher') color = 0xff0000;
-            else if (w.type === 'laser-cutter') color = 0xffff00;
-            else if (w.type === 'waste-escape-pod') color = 0xff00ff;
+            let color = WEAPON_TYPES[w.type]?.color || 0x0000ff;
             const gridSize = WEAPON_GRID_SIZES[w.type] || {w:1,h:1};
             let alpha = w.hp / w.stats.hp;
-            let weapon = this.add.rectangle(w.x, w.y, gridSize.w * 10, gridSize.h * 10, color);
+            let weapon = this.add.rectangle(w.x * this.gameScale, w.y * this.gameScale, gridSize.w * this.cellSize, gridSize.h * this.cellSize, color);
             weapon.setAlpha(alpha);
+            this.physics.add.existing(weapon);
+            weapon.body.setImmovable(true);
             this.weapons.add(weapon);
         });
 
@@ -687,7 +872,7 @@ class GameScene extends Phaser.Scene {
 
         // Add projectiles
         shift.projectiles.forEach(p => {
-            let proj = this.add.circle(p.x, p.y, 3, 0xff0000);
+            let proj = this.add.circle(p.x * this.gameScale, p.y * this.gameScale, 3 * this.gameScale, 0xff0000);
             this.projectiles.add(proj);
         });
 
@@ -710,11 +895,12 @@ class GameScene extends Phaser.Scene {
         this.scraps.clear(true, true);
         shift.scraps.forEach(s => {
           if (!this.collectingScrapIds.has(s.id)) {
-            let scrap = this.add.sprite(s.x, s.y, 'scrap');
+            let scrap = this.add.sprite(s.x * this.gameScale, s.y * this.gameScale, 'scrap');
+            scrap.setScale(this.gameScale);
             this.scraps.add(scrap);
             this.tweens.add({
               targets: scrap,
-              y: s.y + 10,
+              y: s.y * this.gameScale + 10 * this.gameScale,
               duration: 300,
               ease: 'Bounce.easeOut'
             });
@@ -739,18 +925,18 @@ class GameScene extends Phaser.Scene {
             }
             return;
         }
-        if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-            currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
-        }
+        const toolbelt = currentUser.toolbelt || [];
+        const selectedId = toolbelt[selectedIndex];
+        if (!selectedId) return;
+        const selectedItem = currentUser.inventory.find(inv => inv.id === selectedId);
+        if (!selectedItem) return;
         if (currentShiftId) {
             let gx = Math.floor(pointer.x / this.cellSize);
             let gy = Math.floor(pointer.y / this.cellSize);
-            const toolbelt = currentUser.toolbelt || [];
-            const selectedType = toolbelt[selectedIndex] || 'pressure-washer';
-            const gridSize = WEAPON_GRID_SIZES[selectedType] || {w:1,h:1};
+            const gridSize = WEAPON_GRID_SIZES[selectedItem.type] || {w:1,h:1};
             let gridW = gridSize.w, gridH = gridSize.h;
-            let x = gx * this.cellSize + gridW * this.cellSize / 2;
-            let y = gy * this.cellSize + gridH * this.cellSize / 2;
+            let x = gx * window.currentShift.cellSize + (gridW * window.currentShift.cellSize) / 2;
+            let y = gy * window.currentShift.cellSize + (gridH * window.currentShift.cellSize) / 2;
             // Check path and occupied for the entire area
             let valid = true;
             for (let i = 0; i < gridW; i++) {
@@ -762,12 +948,12 @@ class GameScene extends Phaser.Scene {
                 const occupied = Object.values(this.weaponPositions).some(pos => {
                     let wGridW = WEAPON_GRID_SIZES[pos.type]?.w || 1;
                     let wGridH = WEAPON_GRID_SIZES[pos.type]?.h || 1;
-                    let wx = Math.floor(pos.x / this.cellSize) - Math.floor(wGridW / 2);
-                    let wy = Math.floor(pos.y / this.cellSize) - Math.floor(wGridH / 2);
+                    let wx = Math.floor(pos.x / 10) - Math.floor(wGridW / 2);
+                    let wy = Math.floor(pos.y / 10) - Math.floor(wGridH / 2);
                     return !(gx + gridW <= wx || wx + wGridW <= gx || gy + gridH <= wy || wy + wGridH <= gy);
                 });
                 if (!occupied) {
-                    socket.emit('place-weapon', { shiftId: currentShiftId, x, y, type: selectedType, userId: currentUser._id });
+                    socket.emit('place-weapon', { shiftId: currentShiftId, x, y, type: selectedItem.type, rarity: selectedItem.rarity, userId: currentUser._id });
                 }
             }
         }
@@ -776,16 +962,15 @@ class GameScene extends Phaser.Scene {
     onPointerMove(pointer) {
         if (!currentUser) return;
         this.hoverGraphics.clear();
-        if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-            currentUser.toolbelt = ['pressure-washer'];
-        }
         const toolbelt = currentUser.toolbelt || [];
-        const selectedType = toolbelt[selectedIndex];
-        if (!selectedType) return;
+        const selectedId = toolbelt[selectedIndex];
+        if (!selectedId) return;
+        const selectedItem = currentUser.inventory.find(inv => inv.id === selectedId);
+        if (!selectedItem) return;
         let gx = Math.floor(pointer.x / this.cellSize);
         let gy = Math.floor(pointer.y / this.cellSize);
         // Get grid size
-        const gridSize = WEAPON_GRID_SIZES[selectedType] || {w:1,h:1};
+        const gridSize = WEAPON_GRID_SIZES[selectedItem.type] || {w:1,h:1};
         let gridW = gridSize.w, gridH = gridSize.h;
         let width = gridW * this.cellSize;
         let height = gridH * this.cellSize;
@@ -802,13 +987,13 @@ class GameScene extends Phaser.Scene {
             const occupied = Object.values(this.weaponPositions).some(pos => {
                 let wGridW = WEAPON_GRID_SIZES[pos.type]?.w || 1;
                 let wGridH = WEAPON_GRID_SIZES[pos.type]?.h || 1;
-                let wx = Math.floor(pos.x / this.cellSize) - Math.floor(wGridW / 2);
-                let wy = Math.floor(pos.y / this.cellSize) - Math.floor(wGridH / 2);
-                return !(gx + gridW <= wx || wx + wGridW <= gx || gy + gridH <= wy || wy + wGridH <= gy);
+                let wwx = Math.floor((pos.x - (wGridW * window.currentShift.cellSize) / 2) / window.currentShift.cellSize);
+                let wwy = Math.floor((pos.y - (wGridH * window.currentShift.cellSize) / 2) / window.currentShift.cellSize);
+                return !(gx + gridW <= wwx || wwx + wGridW <= gx || gy + gridH <= wwy || wwy + wGridH <= gy);
             });
             valid = !occupied;
         }
-        this.hoverGraphics.lineStyle(2, valid ? 0x00ff00 : 0xff0000);
+        this.hoverGraphics.lineStyle(2 * this.gameScale, valid ? 0x00ff00 : 0xff0000);
         this.hoverGraphics.strokeRect(x - width / 2, y - height / 2, width, height);
         this.hoverGraphics.fillStyle(valid ? 0x00ff00 : 0xff0000, 0.3);
         this.hoverGraphics.fillRect(x - width / 2, y - height / 2, width, height);
@@ -817,8 +1002,8 @@ class GameScene extends Phaser.Scene {
         this.hoveredWeaponId = null;
         for (let [id, pos] of Object.entries(this.weaponPositions)) {
             const gridSize = WEAPON_GRID_SIZES[pos.type] || {w:1,h:1};
-            const wx = Math.floor(pos.x / this.cellSize) - Math.floor(gridSize.w / 2);
-            const wy = Math.floor(pos.y / this.cellSize) - Math.floor(gridSize.h / 2);
+            const wx = Math.floor((pos.x - (gridSize.w * window.currentShift.cellSize) / 2) / window.currentShift.cellSize);
+            const wy = Math.floor((pos.y - (gridSize.h * window.currentShift.cellSize) / 2) / window.currentShift.cellSize);
             if (gx >= wx && gx < wx + gridSize.w && gy >= wy && gy < wy + gridSize.h) {
                 this.hoveredWeaponId = id;
                 break;
@@ -826,20 +1011,6 @@ class GameScene extends Phaser.Scene {
         }
     }
 }
-
-const config = {
-    type: Phaser.AUTO,
-    width: 800,
-    height: 600,
-    parent: 'game-container',
-    scene: GameScene,
-    physics: {
-        default: 'arcade',
-        arcade: {
-            debug: false
-        }
-    }
-};
 
 // Start game directly for testing
 // startGame();
@@ -854,7 +1025,13 @@ async function loginUser(credentials) {
       if (res.ok) {
         currentUser = data.user;
         if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-          currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
+          currentUser.toolbelt = [{type: 'pressure-washer', rarity: 'common'}];
+        }
+        if (!currentUser.unlockedWeapons) {
+          currentUser.unlockedWeapons = ['pressure-washer'];
+        }
+        if (!currentUser.credits) {
+          currentUser.credits = 0;
         }
         return true;
       } else {
@@ -876,7 +1053,13 @@ async function loginUser(credentials) {
       if (res.ok) {
         currentUser = data.user;
         if (!currentUser.toolbelt || currentUser.toolbelt.length === 0) {
-          currentUser.toolbelt = [window.generateWeapon('pressure-washer')];
+          currentUser.toolbelt = [{type: 'pressure-washer', rarity: 'common'}];
+        }
+        if (!currentUser.unlockedWeapons) {
+          currentUser.unlockedWeapons = ['pressure-washer'];
+        }
+        if (!currentUser.credits) {
+          currentUser.credits = 0;
         }
         localStorage.setItem('token', data.token);
         return true;
@@ -892,11 +1075,23 @@ async function loginUser(credentials) {
   }
 }
 
+function updateFromServer(data) {
+  const { user, shift } = data;
+  currentUser = user;
+  document.getElementById('credits-display').innerText = `Credits: ${user.credits}`;
+  if (shift) {
+    // Update shift if needed
+  } else {
+    loadLockerRoomPage();
+  }
+}
+
 function loadLockerRoomPage() {
   document.getElementById('login-container').style.display = 'none';
   document.getElementById('nav').style.display = 'flex';
   document.getElementById('locker-room').style.display = 'block';
   document.getElementById('nav-username').textContent = currentUser.username;
+  document.getElementById('nav-credits').textContent = currentUser.credits || 0;
   // Hide game elements
   document.getElementById('game-container').style.display = 'none';
   document.getElementById('toolbelt-ui').style.display = 'none';
@@ -922,6 +1117,7 @@ function connectSocketIO() {
   // Set up socket listeners
   socket.on('shift-update', (shift) => {
     if (!currentUser) return;
+    window.currentShift = shift; // Set current shift for game scene
     // Update player list if locker room is visible
     if (document.getElementById('locker-room').style.display !== 'none') {
       if (shift.id !== currentShiftId) return; // Only update for current shift
@@ -1005,17 +1201,28 @@ function connectSocketIO() {
       });
     }
   });
+  socket.on('update', updateFromServer);
 }
 
 async function obtainShiftCode() {
   console.log('Creating shift for userId:', currentUser._id);
+  // Calculate world dimensions based on window size, maintaining 4:3 aspect
+  let aspect = window.innerWidth / window.innerHeight;
+  let worldWidth, worldHeight;
+  if (aspect > 4/3) {
+    worldWidth = window.innerHeight * 4 / 3;
+    worldHeight = window.innerHeight;
+  } else {
+    worldWidth = window.innerWidth;
+    worldHeight = window.innerWidth * 3 / 4;
+  }
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 10000); // 10 second timeout
   try {
     const res = await fetch('http://localhost:3001/create-shift', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: currentUser._id }),
+      body: JSON.stringify({ userId: currentUser._id, worldWidth, worldHeight }),
       signal: controller.signal
     });
     if (res.ok) {
@@ -1225,4 +1432,50 @@ function getRarityColor(rarity) {
         legendary: '#ffffff'
     };
     return rarityColors[rarity] || '#fff';
+}
+
+function showLicensesModal() {
+  if (!currentUser) return;
+  const modal = document.getElementById('licenses-modal');
+  const list = document.getElementById('licenses-list');
+  list.innerHTML = '';
+  Object.entries(WEAPON_TYPES).forEach(([type, weapon]) => {
+    if (currentUser.unlockedWeapons.includes(type)) {
+      const div = document.createElement('div');
+      div.textContent = `${weapon.name} - Unlocked`;
+      div.style.margin = '5px';
+      list.appendChild(div);
+    } else {
+      const button = document.createElement('button');
+      button.textContent = `Buy ${weapon.name} - ${weapon.cost} credits`;
+      button.style.margin = '5px';
+      button.style.padding = '10px';
+      button.style.background = '#333';
+      button.style.border = '1px solid #ffd700';
+      button.style.color = 'white';
+      button.style.cursor = 'pointer';
+      button.onclick = () => {
+        fetch('http://localhost:3001/buy-license', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: currentUser._id, weaponType: type })
+        }).then(response => {
+          if (response.ok) {
+            return response.json();
+          } else {
+            return response.json().then(err => { throw new Error(err.message || 'Failed to buy'); });
+          }
+        }).then(data => {
+          currentUser.credits = data.credits;
+          currentUser.unlockedWeapons = data.unlockedWeapons;
+          document.getElementById('nav-credits').textContent = currentUser.credits;
+          populateToolbelt(); // Refresh inventory
+          showLicensesModal(); // Refresh modal
+          showDismissableAlert(`Unlocked ${weapon.name}!`, "OK");
+        }).catch(err => showDismissableAlert(err.message, "OK"));
+      };
+      list.appendChild(button);
+    }
+  });
+  modal.style.display = 'block';
 }

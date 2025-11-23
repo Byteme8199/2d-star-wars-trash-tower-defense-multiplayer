@@ -33,18 +33,36 @@ mongoose.connect('mongodb://localhost:27017/coruscant-defense', {
   .catch(err => console.log(err));
 
 // User model
+const inventoryItemSchema = new mongoose.Schema({
+  id: String,
+  type: String,
+  rarity: String,
+  stats: mongoose.Schema.Types.Mixed
+}, { _id: false });
+
 const userSchema = new mongoose.Schema({
   username: String,
   password: String, // In production, hash this
   credits: { type: Number, default: 0 },
-  unlocks: [String], // e.g., ['jedi', 'laser-cutter']
+  unlockedWeapons: { type: [String], default: ['pressure-washer'] },
   gear: [String], // equipped items
   level: { type: Number, default: 1 },
   isOnline: { type: Boolean, default: false },
-  toolbelt: [String] // weapon types for quick action bar
+  toolbelt: [String], // weapon ids for quick action bar
+  inventory: { type: [inventoryItemSchema], default: [{ id: 'default-pw', type: 'pressure-washer', rarity: 'common', stats: { power: 50, cooldown: 1000, range: 50, hp: 100, heatGen: 10, heatResist: 10, knockback: 1, shape: 'cone', gridSize: {w:1,h:1} } }] }
 });
 
 const User = mongoose.model('User', userSchema);
+
+// Gacha Log model
+const gachaLogSchema = new mongoose.Schema({
+  userId: String,
+  weaponType: String,
+  rarity: String,
+  timestamp: { type: Date, default: Date.now }
+});
+
+const GachaLog = mongoose.model('GachaLog', gachaLogSchema);
 
 // Sub schemas
 const enemySchema = new mongoose.Schema({
@@ -100,7 +118,12 @@ const shiftSchema = new mongoose.Schema({
   paused: { type: Boolean, default: false },
   boostThreshold: { type: Number, default: 100 },
   boostInterval: { type: Number, default: 100 },
-  freezeEnd: { type: Number, default: 0 }
+  freezeEnd: { type: Number, default: 0 },
+  worldWidth: Number,
+  worldHeight: Number,
+  gridWidth: Number,
+  gridHeight: Number,
+  cellSize: { type: Number, default: 10 }
 }, { versionKey: false });
 
 const Shift = mongoose.model('Shift', shiftSchema);
@@ -122,21 +145,54 @@ const RARITIES = {
   legendary: { weight: 0.00333, color: 0xffffff, name: 'Legendary', modifier: 2.0 }
 };
 
+const RARITY_MULTIPLIERS = {
+  common: 1.0,
+  uncommon: 1.1,
+  rare: 1.2,
+  mythic: 1.4,
+  legendary: 1.6
+};
+
+function getWeaponStats(type, rarity) {
+  const base = WEAPON_TYPES[type].baseStats;
+  const mult = RARITY_MULTIPLIERS[rarity];
+  return {
+    power: Math.floor(base.power * mult),
+    cooldown: Math.floor(base.cooldown / mult),
+    range: Math.floor(base.range * mult),
+    hp: Math.floor(base.hp * mult),
+    heatGen: base.heatGen,
+    heatResist: Math.floor(base.heatResist * mult),
+    knockback: Math.floor(base.knockback * mult),
+    shape: base.shape,
+    gridSize: base.gridSize
+  };
+}
+
+function getRandomRarity() {
+  const rand = Math.random();
+  if (rand < 0.5) return 'common';
+  if (rand < 0.8) return 'uncommon';
+  if (rand < 0.95) return 'rare';
+  if (rand < 0.99) return 'mythic';
+  return 'legendary';
+}
+
 const WEAPON_TYPES = {
   'pressure-washer': {
-    baseStats: { power: 50, cooldown: 1000, range: 50, shape: 'cone', gridSize: {w:1,h:1}, heatGen: 10, heatResist: 10, hp: 100, cost: 10, knockback: 1 },
+    baseStats: { power: 50, cooldown: 1000, range: 50, shape: 'cone', gridSize: {w:1,h:1}, heatGen: 10, heatResist: 10, hp: 100, cost: 0, knockback: 1 },
     description: 'Shoots high-pressure water stream, damages and cools nearby weapons.'
   },
   'missile-launcher': {
-    baseStats: { power: 100, cooldown: 3000, range: 180, shape: 'missile', gridSize: {w:2,h:2}, heatGen: 15, heatResist: 5, hp: 120, cost: 20, knockback: 2 },
+    baseStats: { power: 100, cooldown: 3000, range: 180, shape: 'missile', gridSize: {w:2,h:2}, heatGen: 15, heatResist: 5, hp: 120, cost: 500, knockback: 2 },
     description: 'Launches 3 homing missiles that track and destroy enemies.'
   },
   'laser-cutter': {
-    baseStats: { power: 30, cooldown: 800, range: 60, shape: 'line', gridSize: {w:1,h:3}, heatGen: 5, heatResist: 8, hp: 80, cost: 15, knockback: 1 },
+    baseStats: { power: 30, cooldown: 800, range: 60, shape: 'line', gridSize: {w:1,h:3}, heatGen: 5, heatResist: 8, hp: 80, cost: 1000, knockback: 1 },
     description: 'Emits focused beam of energy that slices through enemies.'
   },
   'waste-escape-pod': {
-    baseStats: { power: 10, cooldown: 2000, range: 30, shape: 'circle', gridSize: {w:4,h:4}, heatGen: 2, heatResist: 15, hp: 150, cost: 20, knockback: 3 },
+    baseStats: { power: 10, cooldown: 2000, range: 30, shape: 'circle', gridSize: {w:4,h:4}, heatGen: 2, heatResist: 15, hp: 150, cost: 2000, knockback: 3 },
     description: 'Launches pods that explode on impact, dealing area damage.'
   }
   // Add more as needed
@@ -233,37 +289,9 @@ function generateBoost() {
   return { type, rarity, effect, duration: 30000 }; // 30 seconds
 }
 
-function generateRandomBoosts(count) {
-  const types = Object.keys(BOOST_TYPES);
-  const shuffled = types.sort(() => 0.5 - Math.random());
-  const selectedTypes = shuffled.slice(0, count);
-  return selectedTypes.map(type => {
-    // Pick rarity
-    let rand = Math.random();
-    let cumulative = 0;
-    let rarity = 'common';
-    for (const [key, val] of Object.entries(RARITIES)) {
-      cumulative += val.weight;
-      if (rand <= cumulative) {
-        rarity = key;
-        break;
-      }
-    }
-    const base = BOOST_TYPES[type].baseEffect;
-    const mod = RARITIES[rarity].modifier;
-    const effect = {};
-    for (const [key, val] of Object.entries(base)) {
-      if (key.includes('Mult')) {
-        effect[key] = val ** mod; // Compound for multis
-      } else {
-        effect[key] = Math.floor(val * mod);
-      }
-    }
-    return { type, rarity, effect, description: BOOST_TYPES[type].description };
-  });
-}
 
-function generateWeapon(specificType = null) {
+
+function generateWeapon(specificType = null, specificRarity = null) {
   // Map old icon names to types
   const typeMap = { 'PW': 'pressure-washer' };
   if (specificType && typeMap[specificType]) {
@@ -278,14 +306,19 @@ function generateWeapon(specificType = null) {
     type = types[Math.floor(Math.random() * types.length)];
   }
   // Pick rarity
-  let rand = Math.random();
-  let cumulative = 0;
-  let rarity = 'common';
-  for (const [key, val] of Object.entries(RARITIES)) {
-    cumulative += val.weight;
-    if (rand <= cumulative) {
-      rarity = key;
-      break;
+  let rarity;
+  if (specificRarity) {
+    rarity = specificRarity;
+  } else {
+    let rand = Math.random();
+    let cumulative = 0;
+    rarity = 'common';
+    for (const [key, val] of Object.entries(RARITIES)) {
+      cumulative += val.weight;
+      if (rand <= cumulative) {
+        rarity = key;
+        break;
+      }
     }
   }
   // Apply modifier
@@ -335,8 +368,15 @@ app.post('/login', async (req, res) => {
   const user = await User.findOne({ username: username.trim() });
   if (user && await bcrypt.compare(password, user.password)) {
     user.isOnline = true;
+    if (!user.inventory) user.inventory = [];
     if (!user.toolbelt || user.toolbelt.length === 0) {
-      user.toolbelt = ['pressure-washer'];
+      const defaultItems = [
+        { id: 'default-pw-1', type: 'pressure-washer', rarity: 'common', stats: getWeaponStats('pressure-washer', 'common') },
+        { id: 'default-pw-2', type: 'pressure-washer', rarity: 'common', stats: getWeaponStats('pressure-washer', 'common') },
+        { id: 'default-pw-3', type: 'pressure-washer', rarity: 'common', stats: getWeaponStats('pressure-washer', 'common') }
+      ];
+      user.inventory.push(...defaultItems);
+      user.toolbelt = ['default-pw-1', 'default-pw-2', 'default-pw-3'];
       await user.save();
     }
     const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '24h' });
@@ -374,17 +414,59 @@ app.get('/me', (req, res) => {
   });
 });
 
+app.post('/buy-license', async (req, res) => {
+  const { userId, weaponType } = req.body;
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  if (user.unlockedWeapons.includes(weaponType)) return res.status(400).json({ message: 'Already unlocked' });
+  const cost = WEAPON_TYPES[weaponType]?.baseStats?.cost;
+  if (cost === undefined) return res.status(400).json({ message: 'Invalid weapon' });
+  if (user.credits < cost) return res.status(400).json({ message: 'Not enough credits' });
+  user.credits -= cost;
+  user.unlockedWeapons.push(weaponType);
+  await user.save();
+  res.json({ credits: user.credits, unlockedWeapons: user.unlockedWeapons });
+});
+
+app.post('/spin-gacha', async (req, res) => {
+  const { userId } = req.body;
+  const user = await User.findById(userId);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  if (user.credits < 100) return res.status(400).json({ message: 'Not enough credits' });
+  user.credits -= 100;
+  // Pick random unlocked weapon type
+  const unlocked = user.unlockedWeapons.length > 0 ? user.unlockedWeapons : ['pressure-washer'];
+  const type = unlocked[Math.floor(Math.random() * unlocked.length)];
+  // Pick rarity
+  const rarity = getRandomRarity();
+  // Get stats
+  const stats = getWeaponStats(type, rarity);
+  // Create weapon instance
+  const weapon = { id: Date.now().toString(), type, rarity, stats };
+  // Add to inventory
+  if (!user.inventory) user.inventory = [];
+  user.inventory.push(weapon);
+  await user.save();
+  // Log the roll
+  const log = new GachaLog({ userId, weaponType: type, rarity, timestamp: new Date() });
+  await log.save();
+  res.json({ weapon, credits: user.credits });
+});
+
 // Routes for shifts
 app.post('/create-shift', async (req, res) => {
   try {
-    const { userId } = req.body;
-    console.log('Creating shift for userId:', userId);
+    const { userId, worldWidth, worldHeight } = req.body;
+    console.log('Creating shift for userId:', userId, 'world:', worldWidth, 'x', worldHeight);
     const user = await User.findById(userId);
     if (!user) return res.status(400).json({ message: 'User not found' });
     const shiftId = 'shift-' + Date.now();
-    const shift = new Shift({ id: shiftId, players: [{ userId, username: user.username, x: 400, y: 300 }], ready: [] });
+    const gridWidth = Math.floor(worldWidth / 10);
+    const gridHeight = Math.floor(worldHeight / 10);
+    const cellSize = 10;
+    const shift = new Shift({ id: shiftId, players: [{ userId, username: user.username, x: worldWidth / 2, y: worldHeight / 2 }], ready: [], worldWidth, worldHeight, gridWidth, gridHeight, cellSize });
     console.log('Generating map...');
-    const map = generateMap();
+    const map = generateMap(gridWidth, gridHeight);
     console.log('Generated map start:', map.startPos, 'end:', map.endPos, 'path length:', map.pathSquares.length, 'last square:', map.pathSquares[map.pathSquares.length - 1]);
     if (!map.pathSquares.some(s => s.x === map.endPos.x && s.y === map.endPos.y)) {
       console.error('Path did not reach end!');
@@ -440,7 +522,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('place-weapon', async (data) => {
-    const { shiftId, x, y, type, userId } = data;
+    const { shiftId, x, y, type, rarity, userId } = data;
     const shift = await Shift.findOne({ id: shiftId });
     if (!shift) return;
     const player = shift.players.find(p => p.userId === userId);
@@ -448,10 +530,10 @@ io.on('connection', (socket) => {
     const now = Date.now();
     const cooldown = 1000; // 1 second cooldown
     if (now - player.lastPlaced < cooldown) return; // On cooldown
-    // Generate weapon based on type
-    const weaponData = generateWeapon(type);
-    let gx = Math.floor(x / 10);
-    let gy = Math.floor(y / 10);
+    // Generate weapon based on type and rarity
+    const weaponData = generateWeapon(type, rarity);
+    let gx = Math.floor(x / shift.cellSize);
+    let gy = Math.floor(y / shift.cellSize);
     const gridSize = weaponData.stats.gridSize || {w:1,h:1};
     let pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
     // Check path for the entire area
@@ -465,8 +547,8 @@ io.on('connection', (socket) => {
       // Check occupied
       const occupied = shift.weapons.some(w => {
         const wGridSize = WEAPON_TYPES[w.type]?.baseStats?.gridSize || {w:1,h:1};
-        let wx = Math.floor(w.x / 10) - Math.floor(wGridSize.w / 2);
-        let wy = Math.floor(w.y / 10) - Math.floor(wGridSize.h / 2);
+        let wx = Math.floor(w.x / shift.cellSize) - Math.floor(wGridSize.w / 2);
+        let wy = Math.floor(w.y / shift.cellSize) - Math.floor(wGridSize.h / 2);
         return !(gx + gridSize.w <= wx || wx + wGridSize.w <= gx || gy + gridSize.h <= wy || wy + wGridSize.h <= gy);
       });
       if (!occupied) {
@@ -517,13 +599,15 @@ io.on('connection', (socket) => {
       if (shift.ready.length === shift.players.length) {
         const user = await User.findById(userId);
         // Assign player positions
-        const positions = assignPlayerPositions(shift.map.pathSquares, shift.players.length);
+        const positions = assignPlayerPositions(shift.map.pathSquares, shift.players.length, shift.cellSize, shift.gridHeight, shift.worldWidth / 2, shift.worldHeight / 2);
         shift.players.forEach((p, i) => {
           p.x = positions[i].x;
           p.y = positions[i].y;
           if (!p.inventory || p.inventory.length === 0) {
-            const toolbelt = (user && user.toolbelt) || ['pressure-washer', 'pressure-washer', 'pressure-washer'];
-            p.inventory = toolbelt.map(type => generateWeapon(type));
+            p.inventory = user.toolbelt.map(id => {
+              const item = user.inventory.find(inv => inv.id === id);
+              return item ? { ...item } : { id, type: 'pressure-washer', rarity: 'common', stats: getWeaponStats('pressure-washer', 'common') };
+            });
           }
           p.boosts = []; // Start with no boosts
           p.scrap = 0; // Starting scrap
@@ -731,11 +815,11 @@ async function gameLoop(shiftId) {
   // Spawn enemies
   if (Math.random() < 0.02) { // 2% chance per frame to spawn (~1.2 per second at 60 FPS)
     const startSquare = shift.map.pathSquares[0];
-    let enemyX = startSquare.x * 10 + 5;
-    let enemyY = startSquare.y * 10 + 5;
+    let enemyX = startSquare.x * shift.cellSize + shift.cellSize / 2;
+    let enemyY = startSquare.y * shift.cellSize + shift.cellSize / 2;
     if (isNaN(enemyX) || isNaN(enemyY)) {
-      enemyX = 5;
-      enemyY = 305;
+      enemyX = shift.cellSize / 2;
+      enemyY = shift.worldHeight / 2;
     }
     shift.enemies.push({
       id: Date.now().toString(),
@@ -756,8 +840,8 @@ async function gameLoop(shiftId) {
     let nextIndex = enemy.pathIndex + 1;
     if (nextIndex < shift.map.pathSquares.length) {
       let nextSquare = shift.map.pathSquares[nextIndex];
-      let targetX = nextSquare.x * 10 + 5;
-      let targetY = nextSquare.y * 10 + 5;
+      let targetX = nextSquare.x * shift.cellSize + shift.cellSize / 2;
+      let targetY = nextSquare.y * shift.cellSize + shift.cellSize / 2;
       let dx = targetX - enemy.x;
       let dy = targetY - enemy.y;
       let dist = Math.sqrt(dx * dx + dy * dy);
@@ -816,8 +900,8 @@ async function gameLoop(shiftId) {
           if (nearest.health > 0) {
             nearest.pathIndex = Math.max(0, nearest.pathIndex - effectiveStats.knockback);
             const newSquare = shift.map.pathSquares[nearest.pathIndex];
-            nearest.x = newSquare.x * 10 + 5;
-            nearest.y = newSquare.y * 10 + 5;
+            nearest.x = newSquare.x * shift.cellSize + shift.cellSize / 2;
+            nearest.y = newSquare.y * shift.cellSize + shift.cellSize / 2;
           }
           if (nearest.health <= 0) {
             let scrapGain = 10;
@@ -826,7 +910,7 @@ async function gameLoop(shiftId) {
                 if (boost.effect.scrapMult) scrapGain = Math.floor(scrapGain * boost.effect.scrapMult);
               });
             }
-            shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(800, nearest.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(600, nearest.y + (Math.random() - 0.5) * 20)), value: scrapGain });
+            shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(shift.worldWidth, nearest.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(shift.worldHeight, nearest.y + (Math.random() - 0.5) * 20)), value: scrapGain });
             shift.enemiesDefeated += 1;
             shift.wave = Math.floor(shift.enemiesDefeated / 10) + 1;
             shift.enemies = shift.enemies.filter(e => e !== nearest);
@@ -881,8 +965,8 @@ async function gameLoop(shiftId) {
         if (target.health > 0) {
           target.pathIndex = Math.max(0, target.pathIndex - p.knockback);
           const newSquare = shift.map.pathSquares[target.pathIndex];
-          target.x = newSquare.x * 10 + 5;
-          target.y = newSquare.y * 10 + 5;
+          target.x = newSquare.x * shift.cellSize + shift.cellSize / 2;
+          target.y = newSquare.y * shift.cellSize + shift.cellSize / 2;
         }
         if (target.health <= 0) {
           let scrapGain = 10;
@@ -892,7 +976,7 @@ async function gameLoop(shiftId) {
               if (boost.effect.scrapMult) scrapGain = Math.floor(scrapGain * boost.effect.scrapMult);
             });
           }
-          shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(800, target.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(600, target.y + (Math.random() - 0.5) * 20)), value: scrapGain });
+          shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(shift.worldWidth, target.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(shift.worldHeight, target.y + (Math.random() - 0.5) * 20)), value: scrapGain });
           shift.enemiesDefeated += 1;
           shift.wave = Math.floor(shift.enemiesDefeated / 10) + 1;
           shift.enemies = shift.enemies.filter(e => e !== target);
@@ -944,7 +1028,7 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-function assignPlayerPositions(pathSquares, numPlayers) {
+function assignPlayerPositions(pathSquares, numPlayers, cellSize, gridHeight, centerX, centerY) {
   const positions = [];
   for (let i = 0; i < numPlayers; i++) {
     const pathLength = pathSquares.length;
@@ -954,17 +1038,17 @@ function assignPlayerPositions(pathSquares, numPlayers) {
     let placed = false;
     for (let offset = 5; offset <= 15 && !placed; offset++) {
       const candidateY = anchor.y + side * offset;
-      if (candidateY >= 0 && candidateY < 60) {
+      if (candidateY >= 0 && candidateY < gridHeight) {
         const onPath = pathSquares.some(s => s.x === anchor.x && s.y === candidateY);
         if (!onPath) {
-          positions.push({ x: anchor.x * 10 + 5, y: candidateY * 10 + 5 });
+          positions.push({ x: anchor.x * cellSize + cellSize / 2, y: candidateY * cellSize + cellSize / 2 });
           placed = true;
         }
       }
     }
     if (!placed) {
       // Fallback to center
-      positions.push({ x: 400, y: 300 });
+      positions.push({ x: centerX, y: centerY });
     }
   }
   return positions;
@@ -984,9 +1068,7 @@ function isValidPath(pathSquares) {
   return true;
 }
 
-function generateMap() {
-  const gridWidth = 80;
-  const gridHeight = 60;
+function generateMap(gridWidth, gridHeight) {
   let pathSquares;
   let startPos;
   let endPos;
@@ -1111,4 +1193,30 @@ class MinHeap {
       index = smallest;
     }
   }
+}
+
+function assignPlayerPositions(pathSquares, numPlayers, cellSize, gridHeight, centerX, centerY) {
+  const positions = [];
+  for (let i = 0; i < numPlayers; i++) {
+    const pathLength = pathSquares.length;
+    const anchorIndex = Math.floor(Math.random() * pathLength);
+    const anchor = pathSquares[anchorIndex];
+    const side = i % 2 === 0 ? -1 : 1; // -1 for above, 1 for below
+    let placed = false;
+    for (let offset = 5; offset <= 15 && !placed; offset++) {
+      const candidateY = anchor.y + side * offset;
+      if (candidateY >= 0 && candidateY < gridHeight) {
+        const onPath = pathSquares.some(s => s.x === anchor.x && s.y === candidateY);
+        if (!onPath) {
+          positions.push({ x: anchor.x * cellSize + cellSize / 2, y: candidateY * cellSize + cellSize / 2 });
+          placed = true;
+        }
+      }
+    }
+    if (!placed) {
+      // Fallback to center
+      positions.push({ x: centerX, y: centerY });
+    }
+  }
+  return positions;
 }
