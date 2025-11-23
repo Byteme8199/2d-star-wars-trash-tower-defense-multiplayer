@@ -350,6 +350,7 @@ function showItemModal(itemOrType, event) {
     // Item instance
     item = itemOrType;
   }
+  if (!item) return;
   if (item) {
     const base = WEAPON_TYPES[item.type];
     if (base) {
@@ -504,10 +505,12 @@ document.addEventListener('keydown', (e) => {
         scene.paused = false;
         scene.scene.resume('GameScene');
         document.getElementById('pause-modal').style.display = 'none';
+        socket.emit('resume-shift', { shiftId: currentShiftId });
       } else {
         scene.paused = true;
         scene.scene.pause('GameScene');
         showPauseModal();
+        socket.emit('pause-shift', { shiftId: currentShiftId });
       }
     }
   }
@@ -1317,6 +1320,7 @@ function showPauseModal() {
         scene.scene.resume('GameScene');
       }
     }
+    socket.emit('resume-shift', { shiftId: currentShiftId });
   };
 
   const closeX = document.getElementById('pause-close-x');
@@ -1347,6 +1351,7 @@ function showGameMenu() {
         scene.scene.resume('GameScene');
       }
     }
+    socket.emit('resume-shift', { shiftId: currentShiftId });
   };
 
   const forfeit = () => {

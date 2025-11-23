@@ -757,6 +757,24 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('pause-shift', async (data) => {
+    const { shiftId } = data;
+    const shift = await Shift.findOne({ id: shiftId });
+    if (!shift) return;
+    shift.paused = true;
+    await shift.save();
+    io.to(shiftId).emit('shift-update', shift);
+  });
+
+  socket.on('resume-shift', async (data) => {
+    const { shiftId } = data;
+    const shift = await Shift.findOne({ id: shiftId });
+    if (!shift) return;
+    shift.paused = false;
+    await shift.save();
+    io.to(shiftId).emit('shift-update', shift);
+  });
+
   socket.on('forfeit-shift', async (data) => {
     const { shiftId, userId } = data;
     const shift = await Shift.findOne({ id: shiftId });
@@ -796,6 +814,33 @@ io.on('connection', (socket) => {
     // Handle player leaving shift
   });
 });
+
+function generateRandomBoosts(count) {
+  const boostPool = [
+    // One-time boosts
+    { type: 'weapon-heal', rarity: 'common', description: 'Heal all your weapons to full HP', effect: { healWeapons: true } },
+    { type: 'waste-destroy', rarity: 'rare', description: 'Destroy all enemies on the map', effect: { destroyWaste: true } },
+    { type: 'enemy-freeze', rarity: 'uncommon', description: 'Freeze all enemies for 5 seconds', effect: { freezeEnemies: true } },
+    { type: 'scrap-suck', rarity: 'uncommon', description: 'Collect all scrap on the map', effect: { suckScrap: true } },
+    // Permanent boosts
+    { type: 'hp-boost', rarity: 'common', description: 'Increase weapon HP by 20%', effect: { hpMult: 1.2 } },
+    { type: 'range-boost', rarity: 'uncommon', description: 'Increase weapon range by 20%', effect: { rangeMult: 1.2 } },
+    { type: 'power-boost', rarity: 'rare', description: 'Increase weapon power by 15%', effect: { powerMult: 1.15 } },
+    { type: 'cooldown-boost', rarity: 'uncommon', description: 'Reduce weapon cooldown by 10%', effect: { cooldownMult: 0.9 } },
+    { type: 'knockback-boost', rarity: 'common', description: 'Increase weapon HP by 20%', effect: { knockbackMult: 1.2 } },
+    { type: 'scrap-boost', rarity: 'rare', description: 'Increase scrap gain by 20%', effect: { scrapMult: 1.2 } },
+    { type: 'pickup-boost', rarity: 'uncommon', description: 'Increase pickup radius by 20%', effect: { pickupRadiusMult: 1.2 } },
+    { type: 'heat-dissipate', rarity: 'common', description: 'Increase heat dissipation by 0.2', effect: { heatDissipate: 0.2 } },
+    { type: 'heat-resist', rarity: 'uncommon', description: 'Increase heat resistance by 10', effect: { heatResistBonus: 10 } }
+  ];
+
+  const selected = [];
+  const shuffled = [...boostPool].sort(() => Math.random() - 0.5);
+  for (let i = 0; i < Math.min(count, shuffled.length); i++) {
+    selected.push(shuffled[i]);
+  }
+  return selected;
+}
 
 async function gameLoop(shiftId) {
   const shift = await Shift.findOne({ id: shiftId });
