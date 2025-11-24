@@ -71,7 +71,10 @@ const enemySchema = new mongoose.Schema({
   y: Number,
   health: Number,
   type: String,
-  pathIndex: { type: Number, default: 0 }
+  pathIndex: { type: Number, default: 0 },
+  pathId: { type: Number, default: 0 },
+  size: { type: Number, default: 1 },
+  reachedPit: { type: Boolean, default: false }
 });
 
 const weaponSchema = new mongoose.Schema({
@@ -123,7 +126,17 @@ const shiftSchema = new mongoose.Schema({
   worldHeight: Number,
   gridWidth: Number,
   gridHeight: Number,
-  cellSize: { type: Number, default: 10 }
+  cellSize: { type: Number, default: 10 },
+  phase: { type: Number, default: 1 },
+  phaseStartTime: { type: Number, default: 0 },
+  waveInPhase: { type: Number, default: 1 },
+  activeEntries: [Number],
+  pitFill: { type: Number, default: 0 },
+  pitMaxFill: { type: Number, default: 20 },
+  waves: [{ phase: Number, waveInPhase: Number, activeEntries: [Number], spawnRate: Number, enemyHp: Number, numEnemies: Number }],
+  currentWaveIndex: { type: Number, default: 0 },
+  waveTimer: { type: Number, default: 0 },
+  waveState: { type: String, default: 'waiting' }
 }, { versionKey: false });
 
 const Shift = mongoose.model('Shift', shiftSchema);
@@ -467,10 +480,7 @@ app.post('/create-shift', async (req, res) => {
     const shift = new Shift({ id: shiftId, players: [{ userId, username: user.username, x: worldWidth / 2, y: worldHeight / 2 }], ready: [], worldWidth, worldHeight, gridWidth, gridHeight, cellSize });
     console.log('Generating map...');
     const map = generateMap(gridWidth, gridHeight);
-    console.log('Generated map start:', map.startPos, 'end:', map.endPos, 'path length:', map.pathSquares.length, 'last square:', map.pathSquares[map.pathSquares.length - 1]);
-    if (!map.pathSquares.some(s => s.x === map.endPos.x && s.y === map.endPos.y)) {
-      console.error('Path did not reach end!');
-    }
+    console.log('Generated map pit:', map.pit, 'entries:', map.entries.length, 'path length:', map.pathSquares.length, 'last square:', map.pathSquares[map.pathSquares.length - 1]);
     console.log('Map generated, saving shift...');
     shift.map = map;
     await shift.save();
@@ -576,17 +586,36 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('start-shift', async (data) => {
+  socket.on('start-wave', async (data) => {
+    const { shiftId } = data;
+    const shift = await Shift.findOne({ id: shiftId });
+    if (shift) {
+      console.log('Start wave called for shift:', shiftId);
+      shift.status = 'active';
+      shift.paused = false;
+      shift.waveState = 'spawning';
+      shift.waveTimer = 0;
+      shift.activeEntries = shift.waves[0].activeEntries;
+      shift.phase = 1;
+      shift.waveInPhase = 1;
+      shift.wave = 1;
+      await shift.save();
+      // Start loop if not running
+      if (!activeShifts[shiftId]) {
+        activeShifts[shiftId] = { shift, intervalId: setInterval(() => gameLoop(shiftId), 1000 / 30) };
+      }
+      io.to(shiftId).emit('shift-update', shift);
+    }
+  });
+
+  socket.on('end-lunch', async (data) => {
     const { shiftId } = data;
     const shift = await Shift.findOne({ id: shiftId });
     if (shift) {
       shift.status = 'active';
+      shift.paused = false;
       await shift.save();
-      // Start loop if not running
-      if (!activeShifts[shiftId]) {
-        activeShifts[shiftId] = { shift, intervalId: setInterval(() => gameLoop(shiftId), 1000 / 60) };
-      }
-      io.to(shiftId).emit('shift-started', shift);
+      io.to(shiftId).emit('shift-update', shift);
     }
   });
 
@@ -599,7 +628,7 @@ io.on('connection', (socket) => {
       if (shift.ready.length === shift.players.length) {
         const user = await User.findById(userId);
         // Assign player positions
-        const positions = assignPlayerPositions(shift.map.pathSquares, shift.players.length, shift.cellSize, shift.gridHeight, shift.worldWidth / 2, shift.worldHeight / 2);
+        const positions = assignPlayerPositions(shift.map.pit, shift.players.length, shift.cellSize, shift.worldWidth, shift.worldHeight, shift.map.pathSquares);
         shift.players.forEach((p, i) => {
           p.x = positions[i].x;
           p.y = positions[i].y;
@@ -615,12 +644,35 @@ io.on('connection', (socket) => {
           p.pickupThreshold = 100; // Boost threshold
           p.previousPickupThreshold = 0; // Previous threshold
         });
-        shift.status = 'active';
+        shift.activeEntries = Array.from({length: shift.map.entries.length}, (_, i) => i);
+        const waves = [];
+        for (let phase = 1; phase <= 3; phase++) {
+          const wavesInPhase = phase === 3 ? 3 : 5;
+          for (let waveInPhase = 1; waveInPhase <= wavesInPhase; waveInPhase++) {
+            const activeEntries = phase === 1 ? [0] : phase === 2 ? [0,1] : [0,1,2];
+            const spawnRate = 1000; // 1 per second
+            const numEnemies = Math.floor(Math.random() * 21) + 20; // 20-40
+            const enemyHp = Math.floor(50 * (40 / numEnemies));
+            waves.push({phase, waveInPhase, activeEntries, spawnRate, enemyHp, numEnemies});
+          }
+        }
+        console.log('Generated waves:', waves);
+        shift.waves = waves;
+        shift.currentWaveIndex = 0;
+        shift.waveTimer = 0;
+        shift.waveState = 'waiting';
+        shift.waveInPhase = 1;
+        shift.phase = 1;
+        shift.pitFill = 0;
+        shift.overflow = 1000;
+        shift.status = 'planning';
+        shift.paused = true;
         await shift.save();
         if (!activeShifts[shiftId]) {
           activeShifts[shiftId] = { shift, intervalId: setInterval(() => gameLoop(shiftId), 1000 / 60) };
         }
         io.to(shiftId).emit('shift-started', shift);
+        setTimeout(() => io.to(shiftId).emit('shift-update', shift), 1000);
       }
       io.to(shiftId).emit('shift-update', shift);
     }
@@ -771,6 +823,10 @@ io.on('connection', (socket) => {
     const shift = await Shift.findOne({ id: shiftId });
     if (!shift) return;
     shift.paused = false;
+    if (shift.waveState === 'lunch') {
+      shift.waveState = 'spawning';
+      shift.waveTimer = 0;
+    }
     await shift.save();
     io.to(shiftId).emit('shift-update', shift);
   });
@@ -857,22 +913,65 @@ async function gameLoop(shiftId) {
     if (typeof player.scrap !== 'number' || isNaN(player.scrap)) player.scrap = 0;
   });
 
-  // Spawn enemies
-  if (Math.random() < 0.02) { // 2% chance per frame to spawn (~1.2 per second at 60 FPS)
-    const startSquare = shift.map.pathSquares[0];
-    let enemyX = startSquare.x * shift.cellSize + shift.cellSize / 2;
-    let enemyY = startSquare.y * shift.cellSize + shift.cellSize / 2;
-    if (isNaN(enemyX) || isNaN(enemyY)) {
-      enemyX = shift.cellSize / 2;
-      enemyY = shift.worldHeight / 2;
+  const currentWave = shift.waves[shift.currentWaveIndex];
+  if (!currentWave) {
+    shift.status = 'ended';
+    return;
+  }
+  shift.waveTimer += 1/30;
+  if (shift.waveState === 'spawning') {
+    if (shift.waveTimer < 50) {
+      if (Math.random() < currentWave.spawnRate / 30 && shift.enemies.length < 100) {
+        const active = shift.activeEntries;
+        if (active.length > 0) {
+          const entryIndex = active[Math.floor(Math.random() * active.length)];
+          const pathId = entryIndex;
+          const path = shift.map.corePaths[pathId];
+          if (path && path.length > 0) {
+            const startSquare = path[0];
+            let enemyX = startSquare.x * shift.cellSize + shift.cellSize / 2;
+            let enemyY = startSquare.y * shift.cellSize + shift.cellSize / 2;
+            enemyX = Math.max(0, Math.min(shift.worldWidth - shift.cellSize, enemyX));
+            enemyY = Math.max(0, Math.min(shift.worldHeight - shift.cellSize, enemyY));
+            const size = 1 + Math.floor(Math.random() * 3);
+            const hp = currentWave.enemyHp;
+            console.log(`${new Date().toISOString()} Spawning enemy: id=${Date.now().toString()}, type=waste, HP=${hp}, position=(${enemyX}, ${enemyY}), spawner=entry${entryIndex}`);
+            shift.enemies.push({
+              id: Date.now().toString(),
+              x: enemyX,
+              y: enemyY,
+              pathIndex: 0,
+              health: hp,
+              pathId,
+              size,
+              reachedPit: false
+            });
+          }
+        }
+      }
+    } else {
+      shift.waveState = 'delay';
+      shift.waveTimer = 0;
     }
-    shift.enemies.push({
-      id: Date.now().toString(),
-      x: enemyX,
-      y: enemyY,
-      pathIndex: 0,
-      health: 100 + (shift.wave - 1) * 20
-    });
+  } else if (shift.waveState === 'delay') {
+    if (shift.waveTimer >= 10) {
+      shift.currentWaveIndex++;
+      const nextWave = shift.waves[shift.currentWaveIndex];
+      if (nextWave) {
+        shift.activeEntries = nextWave.activeEntries;
+        shift.phase = nextWave.phase;
+        shift.waveInPhase = nextWave.waveInPhase;
+        shift.wave = (nextWave.phase - 1) * 4 + nextWave.waveInPhase;
+        shift.waveState = 'spawning';
+        shift.waveTimer = 0;
+        if (shift.currentWaveIndex % 4 === 0 && shift.currentWaveIndex > 0) {
+          shift.waveState = 'lunch';
+          shift.paused = true;
+        }
+      } else {
+        shift.status = 'ended';
+      }
+    }
   }
 
   // Simulate enemies moving along path
@@ -882,24 +981,31 @@ async function gameLoop(shiftId) {
       return;
     }
     if (Date.now() < shift.freezeEnd) return; // Frozen
+    const path = shift.map.corePaths[enemy.pathId];
+    if (!path) return; // Invalid path
     let nextIndex = enemy.pathIndex + 1;
-    if (nextIndex < shift.map.pathSquares.length) {
-      let nextSquare = shift.map.pathSquares[nextIndex];
+    if (nextIndex < path.length) {
+      let nextSquare = path[nextIndex];
       let targetX = nextSquare.x * shift.cellSize + shift.cellSize / 2;
       let targetY = nextSquare.y * shift.cellSize + shift.cellSize / 2;
       let dx = targetX - enemy.x;
       let dy = targetY - enemy.y;
       let dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 2) {
+      if (dist < 0.5) {
         enemy.pathIndex = nextIndex;
       } else {
-        enemy.x += (dx / dist) * 2;
-        enemy.y += (dy / dist) * 2;
+        enemy.x += (dx / dist) * 1;
+        enemy.y += (dy / dist) * 1;
       }
     } else {
-      // reached end
-      shift.overflow -= 10;
-      shift.enemies = shift.enemies.filter(e => e !== enemy);
+      // reached end, stay in pit
+      if (!enemy.reachedPit) {
+        enemy.reachedPit = true;
+        enemy.pathIndex = path.length;
+        console.log(`Enemy reached pit: id=${enemy.id}, overflow before=${shift.overflow}`);
+        shift.overflow -= 10;
+        console.log(`Overflow after=${shift.overflow}`);
+      }
     }
   });
 
@@ -933,7 +1039,7 @@ async function gameLoop(shiftId) {
               x: weapon.x,
               y: weapon.y,
               targetId: nearest.id,
-              speed: 3,
+              speed: 1,
               damage: Math.floor(effectiveStats.power / 3),
               playerId: weapon.playerId,
               knockback: effectiveStats.knockback
@@ -944,7 +1050,7 @@ async function gameLoop(shiftId) {
           nearest.health -= effectiveStats.power;
           if (nearest.health > 0) {
             nearest.pathIndex = Math.max(0, nearest.pathIndex - effectiveStats.knockback);
-            const newSquare = shift.map.pathSquares[nearest.pathIndex];
+            const newSquare = shift.map.corePaths[nearest.pathId][nearest.pathIndex];
             nearest.x = newSquare.x * shift.cellSize + shift.cellSize / 2;
             nearest.y = newSquare.y * shift.cellSize + shift.cellSize / 2;
           }
@@ -957,7 +1063,6 @@ async function gameLoop(shiftId) {
             }
             shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(shift.worldWidth, nearest.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(shift.worldHeight, nearest.y + (Math.random() - 0.5) * 20)), value: scrapGain });
             shift.enemiesDefeated += 1;
-            shift.wave = Math.floor(shift.enemiesDefeated / 10) + 1;
             shift.enemies = shift.enemies.filter(e => e !== nearest);
           }
           // Emit weapon fired event
@@ -1009,7 +1114,7 @@ async function gameLoop(shiftId) {
         target.health -= p.damage;
         if (target.health > 0) {
           target.pathIndex = Math.max(0, target.pathIndex - p.knockback);
-          const newSquare = shift.map.pathSquares[target.pathIndex];
+          const newSquare = shift.map.corePaths[target.pathId][target.pathIndex];
           target.x = newSquare.x * shift.cellSize + shift.cellSize / 2;
           target.y = newSquare.y * shift.cellSize + shift.cellSize / 2;
         }
@@ -1023,7 +1128,6 @@ async function gameLoop(shiftId) {
           }
           shift.scraps.push({ id: Date.now().toString() + Math.random(), x: Math.max(0, Math.min(shift.worldWidth, target.x + (Math.random() - 0.5) * 20)), y: Math.max(0, Math.min(shift.worldHeight, target.y + (Math.random() - 0.5) * 20)), value: scrapGain });
           shift.enemiesDefeated += 1;
-          shift.wave = Math.floor(shift.enemiesDefeated / 10) + 1;
           shift.enemies = shift.enemies.filter(e => e !== target);
         }
         shift.projectiles = shift.projectiles.filter(pp => pp !== p);
@@ -1073,28 +1177,25 @@ server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-function assignPlayerPositions(pathSquares, numPlayers, cellSize, gridHeight, centerX, centerY) {
+function assignPlayerPositions(pit, numPlayers, cellSize, worldWidth, worldHeight, pathSquares) {
   const positions = [];
+  const pitCenterX = (pit.x + pit.width / 2) * cellSize;
+  const pitCenterY = (pit.y + pit.height / 2) * cellSize;
+  const pathSet = new Set(pathSquares.map(s => `${s.x},${s.y}`));
   for (let i = 0; i < numPlayers; i++) {
-    const pathLength = pathSquares.length;
-    const anchorIndex = Math.floor(Math.random() * pathLength);
-    const anchor = pathSquares[anchorIndex];
-    const side = i % 2 === 0 ? -1 : 1; // -1 for above, 1 for below
-    let placed = false;
-    for (let offset = 5; offset <= 15 && !placed; offset++) {
-      const candidateY = anchor.y + side * offset;
-      if (candidateY >= 0 && candidateY < gridHeight) {
-        const onPath = pathSquares.some(s => s.x === anchor.x && s.y === candidateY);
-        if (!onPath) {
-          positions.push({ x: anchor.x * cellSize + cellSize / 2, y: candidateY * cellSize + cellSize / 2 });
-          placed = true;
-        }
-      }
-    }
-    if (!placed) {
-      // Fallback to center
-      positions.push({ x: centerX, y: centerY });
-    }
+    const angle = (i / numPlayers) * 2 * Math.PI;
+    let dist = 50; // pixels
+    let x, y, gx, gy;
+    do {
+      x = pitCenterX + Math.cos(angle) * dist;
+      y = pitCenterY + Math.sin(angle) * dist;
+      x = Math.max(0, Math.min(worldWidth, x));
+      y = Math.max(0, Math.min(worldHeight, y));
+      gx = Math.floor(x / cellSize);
+      gy = Math.floor(y / cellSize);
+      dist += 10; // increase distance if on path
+    } while (pathSet.has(`${gx},${gy}`));
+    positions.push({ x, y });
   }
   return positions;
 }
@@ -1114,18 +1215,85 @@ function isValidPath(pathSquares) {
 }
 
 function generateMap(gridWidth, gridHeight) {
-  let pathSquares;
-  let startPos;
-  let endPos;
-  // Generate start and end on border
-  startPos = { x: 0, y: Math.floor(Math.random() * gridHeight) };
-  endPos = { x: gridWidth - 1, y: Math.floor(Math.random() * gridHeight) };
-  // Dijkstra with min 5 and max 10 straight runs
-  const dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]]; // 0: up, 1: right, 2: down, 3: left
+  // Choose pit position: 4x5 grid cells
+  const pitWidth = 4;
+  const pitHeight = 5;
+  const pit = {
+    x: Math.floor(Math.random() * (gridWidth - pitWidth)),
+    y: Math.floor(Math.random() * (gridHeight - pitHeight)),
+    width: pitWidth,
+    height: pitHeight
+  };
+  // Choose number of entries: 2-4
+  const numEntries = 2 + Math.floor(Math.random() * 3);
+  const entries = [];
+  for (let i = 0; i < numEntries; i++) {
+    let ex, ey;
+    do {
+      ex = Math.floor(Math.random() * gridWidth);
+      ey = Math.floor(Math.random() * gridHeight);
+    } while (ex >= pit.x && ex < pit.x + pitWidth && ey >= pit.y && ey < pit.y + pitHeight);
+    entries.push({ x: ex, y: ey });
+  }
+  // Pit center
+  const pitCenter = { x: pit.x + Math.floor(pitWidth / 2), y: pit.y + Math.floor(pitHeight / 2) };
+  // Generate paths from each entry to pit center
+  const corePaths = [];
+  const allCoreSquares = new Set();
+  for (const entry of entries) {
+    const path = generatePath(entry, pitCenter, gridWidth, gridHeight);
+    if (path && path.length >= 30) { // Min 30 grid units
+      corePaths.push(path);
+      path.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
+    }
+  }
+  // If no valid paths, fallback to single path
+  if (corePaths.length === 0) {
+    const fallbackEntry = entries[0] || { x: 0, y: Math.floor(gridHeight / 2) };
+    let path = generatePath(fallbackEntry, pitCenter, gridWidth, gridHeight);
+    if (!path || path.length < 30) {
+      // Create a longer fallback path by adding intermediate points
+      path = [fallbackEntry];
+      const steps = 30;
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        const x = Math.round(fallbackEntry.x + t * (pitCenter.x - fallbackEntry.x));
+        const y = Math.round(fallbackEntry.y + t * (pitCenter.y - fallbackEntry.y));
+        path.push({ x, y });
+      }
+      path.push(pitCenter);
+    }
+    corePaths.push(path);
+    path.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
+  }
+  // Widen to 3x3 around all core squares, excluding pit
+  const widenedSet = new Set();
+  for (const sqStr of allCoreSquares) {
+    const [x, y] = sqStr.split(',').map(Number);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight && !(nx >= pit.x && nx < pit.x + pit.width && ny >= pit.y && ny < pit.y + pit.height)) {
+          widenedSet.add(`${nx},${ny}`);
+        }
+      }
+    }
+  }
+  const pathSquares = Array.from(widenedSet).map(s => {
+    const [x, y] = s.split(',').map(Number);
+    return { x, y };
+  });
+  return { pit, entries, pathSquares, corePaths };
+}
+
+function generatePath(start, end, gridWidth, gridHeight) {
+  // Dijkstra with min 5 max 10 straight
+  const dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]]; // up, right, down, left
   const dist = new Map();
   const cameFrom = new Map();
   const visited = new Set();
-  const startKey = `${startPos.x},${startPos.y},-1,0`;
+  const startKey = `${start.x},${start.y},-1,0`;
   dist.set(startKey, 0);
   cameFrom.set(startKey, null);
   const pq = new MinHeap();
@@ -1137,7 +1305,7 @@ function generateMap(gridWidth, gridHeight) {
     if (visited.has(current)) continue;
     visited.add(current);
     const [cx, cy, cdir, csteps] = current.split(',').map((v, i) => i < 2 ? Number(v) : (i === 2 ? (v === '-1' ? -1 : Number(v)) : Number(v)));
-    if (cx === endPos.x && cy === endPos.y) {
+    if (cx === end.x && cy === end.y) {
       found = true;
       endKey = current;
       break;
@@ -1150,24 +1318,21 @@ function generateMap(gridWidth, gridHeight) {
         let canMove = false;
         let newsteps;
         if (cdir === -1) {
-          // First move, any direction
           canMove = true;
           newsteps = 1;
         } else if (newdir === cdir) {
-          // Continuing straight
           if (csteps < 10) {
             canMove = true;
             newsteps = csteps + 1;
           }
         } else {
-          // Turning
           if (csteps >= 5) {
             canMove = true;
             newsteps = 1;
           }
         }
         if (canMove) {
-          const newCost = cost + 1 + Math.random() * 2;
+          const newCost = cost + 1;
           const nkey = `${nx},${ny},${newdir},${newsteps}`;
           if (!dist.has(nkey) || newCost < dist.get(nkey)) {
             dist.set(nkey, newCost);
@@ -1178,20 +1343,23 @@ function generateMap(gridWidth, gridHeight) {
       }
     }
   }
-  if (!found) {
-    // Fallback
-    pathSquares = [startPos];
-  } else {
-    // Reconstruct path
-    pathSquares = [];
-    let current = endKey;
-    while (current) {
-      const [x, y] = current.split(',').slice(0, 2).map(Number);
-      pathSquares.unshift({ x, y });
-      current = cameFrom.get(current);
+  if (!found) return null;
+  // Reconstruct path
+  const path = [];
+  let current = endKey;
+  while (current) {
+    const [x, y] = current.split(',').slice(0, 2).map(Number);
+    path.unshift({ x, y });
+    current = cameFrom.get(current);
+  }
+  // Remove consecutive duplicates
+  const uniquePath = [];
+  for (let sq of path) {
+    if (uniquePath.length === 0 || uniquePath[uniquePath.length - 1].x !== sq.x || uniquePath[uniquePath.length - 1].y !== sq.y) {
+      uniquePath.push(sq);
     }
   }
-  return { startPos, endPos, pathSquares };
+  return uniquePath;
 }
 
 class MinHeap {
@@ -1238,30 +1406,4 @@ class MinHeap {
       index = smallest;
     }
   }
-}
-
-function assignPlayerPositions(pathSquares, numPlayers, cellSize, gridHeight, centerX, centerY) {
-  const positions = [];
-  for (let i = 0; i < numPlayers; i++) {
-    const pathLength = pathSquares.length;
-    const anchorIndex = Math.floor(Math.random() * pathLength);
-    const anchor = pathSquares[anchorIndex];
-    const side = i % 2 === 0 ? -1 : 1; // -1 for above, 1 for below
-    let placed = false;
-    for (let offset = 5; offset <= 15 && !placed; offset++) {
-      const candidateY = anchor.y + side * offset;
-      if (candidateY >= 0 && candidateY < gridHeight) {
-        const onPath = pathSquares.some(s => s.x === anchor.x && s.y === candidateY);
-        if (!onPath) {
-          positions.push({ x: anchor.x * cellSize + cellSize / 2, y: candidateY * cellSize + cellSize / 2 });
-          placed = true;
-        }
-      }
-    }
-    if (!placed) {
-      // Fallback to center
-      positions.push({ x: centerX, y: centerY });
-    }
-  }
-  return positions;
 }

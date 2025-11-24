@@ -565,6 +565,7 @@ function startGame() {
   document.getElementById('toolbelt-ui').style.display = 'block';
   document.getElementById('scrap-bar-container').style.display = 'block';
   document.getElementById('toggle-boosts').style.display = 'block';
+  document.getElementById('nav').style.display = 'none';
   updateGameToolbelt();
 }
 
@@ -576,7 +577,6 @@ class GameScene extends Phaser.Scene {
     preload() {
         // Load assets here (e.g., this.load.image('tower', 'assets/tower.png');)
         this.load.spritesheet('conveyor-belt', 'assets/conveyor-belt.png', { frameWidth: 10, frameHeight: 10 });
-        this.load.image('waste', 'assets/waste-01.png');
         this.load.image('scrap', 'assets/scrap.png');
     }
 
@@ -603,13 +603,16 @@ class GameScene extends Phaser.Scene {
         // Path sprites group
         this.pathSprites = this.add.group();
 
-        // Path squares set
-        this.pathSquares = new Set();
+        // Path sprite map for tinting
+        this.pathSpriteMap = {};
+
+        // Flag for path drawn
+        this.pathDrawn = false;
 
         // Create conveyor belt animation
         this.anims.create({
             key: 'conveyor-move',
-            frames: this.anims.generateFrameNumbers('conveyor-belt', { start: 0, end: 3 }),
+            frames: this.anims.generateFrameNumbers('conveyor-belt', { start: 0, end: 2 }),
             frameRate: 3,
             repeat: -1
         });
@@ -623,6 +626,13 @@ class GameScene extends Phaser.Scene {
         for (let y = 0; y <= this.game.canvas.height; y += this.cellSize) {
             this.gridGraphics.lineBetween(0, y, this.game.canvas.width, y);
         }
+        this.gridGraphics.setDepth(-1);
+
+        // Pit graphics
+        this.pitGraphics = this.add.graphics();
+        this.pitGraphics.fillStyle(0xadd8e6);
+        this.pitGraphics.lineStyle(2, 0xffffff); // Add white border for visibility
+        this.pitGraphics.setDepth(-1);
 
         // Initialize groups
         this.enemies = this.add.group();
@@ -630,14 +640,35 @@ class GameScene extends Phaser.Scene {
         this.players = this.add.group();
         this.projectiles = this.add.group();
 
-        // Player sprites map
-        this.playerSprites = {};
+        // Enemy sprites map
+        this.enemySprites = {};
+
+        // Weapon sprites map
+        this.weaponSprites = {};
+
+        // Projectile sprites map
+        this.projectileSprites = {};
 
         // Movement throttling
         this.lastMoveEmit = 0;
 
         // Heat text
         this.heatText = this.add.text(this.game.canvas.width - 100, 10, 'Heat: 0', { fontSize: '16px', fill: '#fff' });
+        this.heatText.setScrollFactor(0);
+        this.heatText.setDepth(10);
+
+        // UI texts
+        this.nameText = this.add.text(10, 10, 'Name: ' + currentUser.username, { fontSize: '16px', fill: '#fff' });
+        this.nameText.setScrollFactor(0);
+        this.nameText.setDepth(10);
+
+        this.creditsText = this.add.text(10, 30, 'Credits: ' + currentUser.credits, { fontSize: '16px', fill: '#fff' });
+        this.creditsText.setScrollFactor(0);
+        this.creditsText.setDepth(10);
+
+        this.phaseText = this.add.text(10, 50, 'Phase: planning, Wave: 0', { fontSize: '16px', fill: '#fff' });
+        this.phaseText.setScrollFactor(0);
+        this.phaseText.setDepth(10);
 
         // Scrap group
         this.scraps = this.add.group();
@@ -665,6 +696,9 @@ class GameScene extends Phaser.Scene {
             s: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S),
             d: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D),
         };
+
+        // Arrow keys
+        this.cursors = this.input.keyboard.createCursorKeys();
 
         // Listen for shift updates
         socket.on('shift-update', (shift) => {
@@ -707,6 +741,11 @@ class GameScene extends Phaser.Scene {
         // Input for placing weapons
         this.input.on('pointerdown', this.placeWeapon, this);
         this.input.on('pointermove', this.onPointerMove, this);
+
+        // Start wave button listener
+        document.getElementById('start-wave-btn').addEventListener('click', () => {
+            socket.emit('start-wave', { shiftId: currentShiftId });
+        });
     }
 
     update() {
@@ -714,10 +753,10 @@ class GameScene extends Phaser.Scene {
         // Handle player movement
         if (this.player) {
             let dx = 0, dy = 0;
-            if (this.wasd.a.isDown) dx -= 1.5 * this.gameScale;
-            if (this.wasd.d.isDown) dx += 1.5 * this.gameScale;
-            if (this.wasd.w.isDown) dy -= 1.5 * this.gameScale;
-            if (this.wasd.s.isDown) dy += 1.5 * this.gameScale;
+            if (this.wasd.a.isDown || this.cursors.left.isDown) dx -= 1.5 * this.gameScale;
+            if (this.wasd.d.isDown || this.cursors.right.isDown) dx += 1.5 * this.gameScale;
+            if (this.wasd.w.isDown || this.cursors.up.isDown) dy -= 1.5 * this.gameScale;
+            if (this.wasd.s.isDown || this.cursors.down.isDown) dy += 1.5 * this.gameScale;
             if (dx || dy) {
                 let newX = this.player.x + dx;
                 let newY = this.player.y + dy;
@@ -793,25 +832,55 @@ class GameScene extends Phaser.Scene {
 
     updateFromServer(shift) {
         if (!currentUser) return;
-        if (this.paused) return;
         window.currentShift = shift;
-        // Update map if available
-        if (shift.map && !this.enemyPath) {
-            this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
-            // Draw path
-            this.pathSprites.clear(true, true);
-            shift.map.pathSquares.forEach((square, index) => {
-                const sprite = this.add.sprite(square.x * this.cellSize + this.cellSize / 2, square.y * this.cellSize + this.cellSize / 2, 'conveyor-belt');
-                sprite.setScale(this.gameScale);
-                sprite.play('conveyor-move');
-                this.pathSprites.add(sprite);
-            });
-            // Create enemy path
-            this.enemyPath = new Phaser.Curves.Path(shift.map.startPos.x * this.cellSize + this.cellSize / 2, shift.map.startPos.y * this.cellSize + this.cellSize / 2);
-            shift.map.pathSquares.forEach(square => {
-                this.enemyPath.lineTo(square.x * this.cellSize + this.cellSize / 2, square.y * this.cellSize + this.cellSize / 2);
-            });
+        if (shift.paused && !this.paused) {
+            this.paused = true;
+            this.scene.pause('GameScene');
+            showPauseModal();
         }
+        if (this.paused) return;
+        // Update map if available
+        if (shift.map) {
+            this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
+            if (!this.pathDrawn) {
+                const coreSet = new Set();
+                shift.map.corePaths.forEach(path => path.forEach(sq => coreSet.add(`${sq.x},${sq.y}`)));
+                shift.map.pathSquares.forEach((square) => {
+                    const key = `${square.x},${square.y}`;
+                    let frame = 0; // Simplify, set all to 0
+                    const sprite = this.add.sprite(square.x * this.cellSize + this.cellSize / 2, square.y * this.cellSize + this.cellSize / 2, 'conveyor-belt');
+                    sprite.setFrame(frame);
+                    sprite.setScale(this.gameScale);
+                    sprite.play('conveyor-move');
+                    sprite.setDepth(0);
+                    this.pathSprites.add(sprite);
+                    this.pathSpriteMap[key] = sprite;
+                });
+                this.pathDrawn = true;
+            }
+            // Update tints
+            const activeSet = new Set();
+            shift.map.corePaths.forEach((path, index) => {
+                if (shift.activeEntries.includes(index)) {
+                    path.forEach(sq => activeSet.add(`${sq.x},${sq.y}`));
+                }
+            });
+            for (const key in this.pathSpriteMap) {
+                const sprite = this.pathSpriteMap[key];
+                if (activeSet.has(key)) {
+                    sprite.setTint(0x8B0000);
+                } else {
+                    sprite.setTint(0x808080);
+                }
+            }
+        }
+
+        // Draw pit
+        this.pitGraphics.clear();
+        this.pitGraphics.fillStyle(0xadd8e6);
+        this.pitGraphics.lineStyle(2, 0xffffff);
+        this.pitGraphics.fillRect(shift.map.pit.x * this.cellSize, shift.map.pit.y * this.cellSize, shift.map.pit.width * this.cellSize, shift.map.pit.height * this.cellSize);
+        this.pitGraphics.strokeRect(shift.map.pit.x * this.cellSize, shift.map.pit.y * this.cellSize, shift.map.pit.width * this.cellSize, shift.map.pit.height * this.cellSize);
 
         // Update players
         shift.players.forEach(p => {
@@ -836,9 +905,9 @@ class GameScene extends Phaser.Scene {
         });
 
         // Clear existing enemies and weapons
-        this.enemies.clear(true, true);
-        this.weapons.clear(true, true);
-        this.projectiles.clear(true, true);
+        // Removed: this.enemies.clear(true, true);
+        // Removed: this.weapons.clear(true, true);
+        // Removed: this.projectiles.clear(true, true);
 
         // Remove old collider
         if (this.playerWeaponCollider) {
@@ -851,37 +920,84 @@ class GameScene extends Phaser.Scene {
         this.enemyPositions = {};
         shift.enemies.forEach(e => this.enemyPositions[e.id] = {x: e.x, y: e.y});
 
-        // Add enemies
+        // Update enemies
+        const currentEnemyIds = new Set(shift.enemies.map(e => e.id));
+        for (let id in this.enemySprites) {
+            if (!currentEnemyIds.has(id)) {
+                this.enemySprites[id].destroy();
+                delete this.enemySprites[id];
+            }
+        }
         shift.enemies.forEach(e => {
-            let enemy = this.add.sprite(e.x * this.gameScale, e.y * this.gameScale, 'waste');
-            enemy.setScale(this.gameScale);
-            this.enemies.add(enemy);
+            if (!this.enemySprites[e.id]) {
+                let enemy = this.add.circle(e.x * this.gameScale, e.y * this.gameScale, 15 * this.gameScale, 0xff0000);
+                enemy.setDepth(1); // Enemies above path
+                this.enemies.add(enemy);
+                this.enemySprites[e.id] = enemy;
+            } else {
+                this.enemySprites[e.id].x = e.x * this.gameScale;
+                this.enemySprites[e.id].y = e.y * this.gameScale;
+            }
         });
 
-        // Add weapons
+        // Update weapons
+        const currentWeaponIds = new Set(shift.weapons.map(w => w.id));
+        for (let id in this.weaponSprites) {
+            if (!currentWeaponIds.has(id)) {
+                this.weaponSprites[id].destroy();
+                delete this.weaponSprites[id];
+            }
+        }
         shift.weapons.forEach(w => {
-            let color = WEAPON_TYPES[w.type]?.color || 0x0000ff;
-            const gridSize = WEAPON_GRID_SIZES[w.type] || {w:1,h:1};
-            let alpha = w.hp / w.stats.hp;
-            let weapon = this.add.rectangle(w.x * this.gameScale, w.y * this.gameScale, gridSize.w * this.cellSize, gridSize.h * this.cellSize, color);
-            weapon.setAlpha(alpha);
-            this.physics.add.existing(weapon);
-            weapon.body.setImmovable(true);
-            this.weapons.add(weapon);
+            if (!this.weaponSprites[w.id]) {
+                let color = WEAPON_TYPES[w.type]?.color || 0x0000ff;
+                const gridSize = WEAPON_GRID_SIZES[w.type] || {w:1,h:1};
+                let alpha = w.hp / w.stats.hp;
+                let weapon = this.add.rectangle(w.x * this.gameScale, w.y * this.gameScale, gridSize.w * this.cellSize, gridSize.h * this.cellSize, color);
+                weapon.setAlpha(alpha);
+                weapon.setDepth(1); // Weapons above path
+                this.physics.add.existing(weapon);
+                weapon.body.setImmovable(true);
+                this.weapons.add(weapon);
+                this.weaponSprites[w.id] = weapon;
+            } else {
+                // Update alpha if needed
+                let alpha = w.hp / w.stats.hp;
+                this.weaponSprites[w.id].setAlpha(alpha);
+            }
         });
 
         // Add new collider
         this.playerWeaponCollider = this.physics.add.collider(this.player, this.weapons);
 
-        // Add projectiles
+        // Update projectiles
+        const currentProjectileIds = new Set(shift.projectiles.map(p => p.id));
+        for (let id in this.projectileSprites) {
+            if (!currentProjectileIds.has(id)) {
+                this.projectileSprites[id].destroy();
+                delete this.projectileSprites[id];
+            }
+        }
         shift.projectiles.forEach(p => {
-            let proj = this.add.circle(p.x * this.gameScale, p.y * this.gameScale, 3 * this.gameScale, 0xff0000);
-            this.projectiles.add(proj);
+            if (!this.projectileSprites[p.id]) {
+                let proj = this.add.circle(p.x * this.gameScale, p.y * this.gameScale, 3 * this.gameScale, 0xff0000);
+                proj.setDepth(2); // Projectiles above everything
+                this.projectiles.add(proj);
+                this.projectileSprites[p.id] = proj;
+            } else {
+                this.projectileSprites[p.id].x = p.x * this.gameScale;
+                this.projectileSprites[p.id].y = p.y * this.gameScale;
+            }
         });
 
         // Update heat
         if (typeof shift.heat !== 'number' || isNaN(shift.heat)) shift.heat = 0;
         this.heatText.setText('Heat: ' + Math.round(shift.heat));
+
+        // Update UI texts
+        this.nameText.setText('Name: ' + currentUser.username);
+        this.creditsText.setText('Credits: ' + currentUser.credits);
+        this.phaseText.setText(`Phase: ${shift.status}, Wave: ${shift.wave}`);
 
         // Update scrap
         const player = shift.players.find(p => p.userId === currentUser._id);
@@ -913,12 +1029,16 @@ class GameScene extends Phaser.Scene {
         // Update toolbelt
         updateGameToolbelt();
 
-        // Update UI
-        // Removed: overflow, wave, scrap updates
+        // Update start wave button
+        if (shift.status === 'planning') {
+            document.getElementById('start-wave-btn').style.display = 'block';
+        } else {
+            document.getElementById('start-wave-btn').style.display = 'none';
+        }
     }
 
     placeWeapon(pointer) {
-        if (this.paused || this.inputsDisabled) return;
+        if (this.paused || this.inputsDisabled || !window.currentShift) return;
         if (!currentUser) return;
         if (pointer.button === 2) {
             if (!currentShiftId) return;
@@ -963,7 +1083,7 @@ class GameScene extends Phaser.Scene {
     }
 
     onPointerMove(pointer) {
-        if (!currentUser) return;
+        if (!window.currentShift || !this.pathSquares) return;
         this.hoverGraphics.clear();
         const toolbelt = currentUser.toolbelt || [];
         const selectedId = toolbelt[selectedIndex];
@@ -1198,8 +1318,8 @@ function connectSocketIO() {
   socket.on('game-over', (data) => {
     if (!currentUser) return;
     if (data.playerId === currentUser._id) {
-      const credits = data.credits;
-      showDismissableAlert(`You earned ${credits} credits from this shift`, "OK", () => {
+      currentUser.credits += data.credits;
+      showDismissableAlert(`You earned ${data.credits} credits from this shift`, "OK", () => {
         loadLockerRoomPage();
       });
     }
@@ -1219,6 +1339,7 @@ async function obtainShiftCode() {
     worldWidth = window.innerWidth;
     worldHeight = window.innerWidth * 3 / 4;
   }
+  worldHeight = 1000; // Fixed for now
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 10000); // 10 second timeout
   try {

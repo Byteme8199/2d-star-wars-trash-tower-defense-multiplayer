@@ -153,6 +153,7 @@
         <div id="account-info">
             <span id="nav-username"></span> | Credits: <span id="nav-credits"></span>
         </div>
+        <div id="phase-indicator">Phase: N/A</div>
         <button id="gacha-btn">Gacha (100 Credits)</button>
         <button id="toggle-boosts" style="display: none;">Show Boosts</button>
         <!-- <button id="locker-btn">Locker Room</button> -->
@@ -242,6 +243,8 @@
     <div id="toolbelt-ui" style="display: none; position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); background: rgba(0, 0, 0, 0.7); padding: 10px; border-radius: 5px; z-index: 10;">
         <div id="game-toolbelt-slots"></div>
     </div>
+
+    <button id="start-wave-btn" style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #333; border: 1px solid #ffd700; color: white; padding: 10px 20px; cursor: pointer; z-index: 1000;">Start Wave</button>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
     <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>

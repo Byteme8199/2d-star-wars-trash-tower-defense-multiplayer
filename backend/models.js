@@ -21,7 +21,8 @@ const enemySchema = new mongoose.Schema({
   y: Number,
   health: Number,
   type: String,
-  pathIndex: { type: Number, default: 0 }
+  pathIndex: { type: Number, default: 0 },
+  reachedPit: { type: Boolean, default: false }
 });
 
 const weaponSchema = new mongoose.Schema({
@@ -55,7 +56,7 @@ const shiftSchema = new mongoose.Schema({
   players: [{ userId: String, username: String, x: Number, y: Number, inventory: [Object], boosts: [Object], scrap: {type: Number, default: 0}, boostChoices: Object, lastPlaced: {type: Number, default: 0}, pickupRadius: {type: Number, default: 20}, pickupThreshold: {type: Number, default: 100}, previousPickupThreshold: {type: Number, default: 0} }],
   map: { type: Object, default: {} }, // e.g., path data
   wave: { type: Number, default: 1 },
-  overflow: { type: Number, default: 100 },
+  overflow: { type: Number, default: 1000 },
   scrap: { type: Number, default: 0 },
   heat: { type: Number, default: 0 },
   enemies: [enemySchema],
