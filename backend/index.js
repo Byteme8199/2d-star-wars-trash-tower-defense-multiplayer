@@ -133,10 +133,12 @@ const shiftSchema = new mongoose.Schema({
   activeEntries: [Number],
   pitFill: { type: Number, default: 0 },
   pitMaxFill: { type: Number, default: 20 },
-  waves: [{ phase: Number, waveInPhase: Number, activeEntries: [Number], spawnRate: Number, enemyHp: Number, numEnemies: Number }],
+  waves: [{ phase: Number, waveInPhase: Number, activeEntries: [Number], spawnRate: Number, enemyHp: Number, numEnemies: Number, spawnInterval: Number }],
   currentWaveIndex: { type: Number, default: 0 },
   waveTimer: { type: Number, default: 0 },
-  waveState: { type: String, default: 'waiting' }
+  waveState: { type: String, default: 'waiting' },
+  spawnTimer: { type: Number, default: 0 },
+  enemiesSpawned: { type: Number, default: 0 }
 }, { versionKey: false });
 
 const Shift = mongoose.model('Shift', shiftSchema);
@@ -595,6 +597,8 @@ io.on('connection', (socket) => {
       shift.paused = false;
       shift.waveState = 'spawning';
       shift.waveTimer = 0;
+      shift.spawnTimer = 0;
+      shift.enemiesSpawned = 0;
       shift.activeEntries = shift.waves[0].activeEntries;
       shift.phase = 1;
       shift.waveInPhase = 1;
@@ -608,12 +612,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('end-lunch', async (data) => {
+  socket.on('end-break', async (data) => {
     const { shiftId } = data;
     const shift = await Shift.findOne({ id: shiftId });
-    if (shift) {
-      shift.status = 'active';
-      shift.paused = false;
+    if (shift && shift.waveState === 'break') {
+      shift.waveState = 'spawning';
+      shift.waveTimer = 0;
+      shift.spawnTimer = 0;
+      shift.enemiesSpawned = 0;
       await shift.save();
       io.to(shiftId).emit('shift-update', shift);
     }
@@ -647,13 +653,13 @@ io.on('connection', (socket) => {
         shift.activeEntries = Array.from({length: shift.map.entries.length}, (_, i) => i);
         const waves = [];
         for (let phase = 1; phase <= 3; phase++) {
-          const wavesInPhase = phase === 3 ? 3 : 5;
-          for (let waveInPhase = 1; waveInPhase <= wavesInPhase; waveInPhase++) {
+          for (let waveInPhase = 1; waveInPhase <= 5; waveInPhase++) {
             const activeEntries = phase === 1 ? [0] : phase === 2 ? [0,1] : [0,1,2];
-            const spawnRate = 1000; // 1 per second
+            const spawnRate = 1000; // not used now
             const numEnemies = Math.floor(Math.random() * 21) + 20; // 20-40
             const enemyHp = Math.floor(50 * (40 / numEnemies));
-            waves.push({phase, waveInPhase, activeEntries, spawnRate, enemyHp, numEnemies});
+            const spawnInterval = 50 / numEnemies; // seconds per enemy
+            waves.push({phase, waveInPhase, activeEntries, spawnRate, enemyHp, numEnemies, spawnInterval});
           }
         }
         console.log('Generated waves:', waves);
@@ -831,6 +837,15 @@ io.on('connection', (socket) => {
     io.to(shiftId).emit('shift-update', shift);
   });
 
+  socket.on('set-pause', async (data) => {
+    const { shiftId, paused } = data;
+    const shift = await Shift.findOne({ id: shiftId });
+    if (!shift) return;
+    shift.paused = paused;
+    await shift.save();
+    io.to(shiftId).emit('shift-update', shift);
+  });
+
   socket.on('forfeit-shift', async (data) => {
     const { shiftId, userId } = data;
     const shift = await Shift.findOne({ id: shiftId });
@@ -908,6 +923,13 @@ async function gameLoop(shiftId) {
     return;
   }
 
+  // Check if any player has boost choices pending
+  if (shift.players.some(p => p.boostChoices)) {
+    await shift.save();
+    io.to(shiftId).emit('shift-update', shift);
+    return;
+  }
+
   // Ensure scrap is set
   shift.players.forEach(player => {
     if (typeof player.scrap !== 'number' || isNaN(player.scrap)) player.scrap = 0;
@@ -920,36 +942,38 @@ async function gameLoop(shiftId) {
   }
   shift.waveTimer += 1/30;
   if (shift.waveState === 'spawning') {
-    if (shift.waveTimer < 50) {
-      if (Math.random() < currentWave.spawnRate / 30 && shift.enemies.length < 100) {
-        const active = shift.activeEntries;
-        if (active.length > 0) {
-          const entryIndex = active[Math.floor(Math.random() * active.length)];
-          const pathId = entryIndex;
-          const path = shift.map.corePaths[pathId];
-          if (path && path.length > 0) {
-            const startSquare = path[0];
-            let enemyX = startSquare.x * shift.cellSize + shift.cellSize / 2;
-            let enemyY = startSquare.y * shift.cellSize + shift.cellSize / 2;
-            enemyX = Math.max(0, Math.min(shift.worldWidth - shift.cellSize, enemyX));
-            enemyY = Math.max(0, Math.min(shift.worldHeight - shift.cellSize, enemyY));
-            const size = 1 + Math.floor(Math.random() * 3);
-            const hp = currentWave.enemyHp;
-            console.log(`${new Date().toISOString()} Spawning enemy: id=${Date.now().toString()}, type=waste, HP=${hp}, position=(${enemyX}, ${enemyY}), spawner=entry${entryIndex}`);
-            shift.enemies.push({
-              id: Date.now().toString(),
-              x: enemyX,
-              y: enemyY,
-              pathIndex: 0,
-              health: hp,
-              pathId,
-              size,
-              reachedPit: false
-            });
-          }
+    shift.spawnTimer += 1/30;
+    if (shift.spawnTimer >= currentWave.spawnInterval && shift.enemiesSpawned < currentWave.numEnemies) {
+      const active = shift.activeEntries;
+      if (active.length > 0) {
+        const entryIndex = active[Math.floor(Math.random() * active.length)];
+        const pathId = entryIndex;
+        const path = shift.map.corePaths[pathId];
+        if (path && path.length > 0) {
+          const startSquare = path[0];
+          let enemyX = startSquare.x * shift.cellSize + shift.cellSize / 2;
+          let enemyY = startSquare.y * shift.cellSize + shift.cellSize / 2;
+          enemyX = Math.max(0, Math.min(shift.worldWidth - shift.cellSize, enemyX));
+          enemyY = Math.max(0, Math.min(shift.worldHeight - shift.cellSize, enemyY));
+          const size = 1 + Math.floor(Math.random() * 3);
+          const hp = currentWave.enemyHp;
+          console.log(`${new Date().toISOString()} Spawning enemy: id=${Date.now().toString()}, type=waste, HP=${hp}, position=(${enemyX}, ${enemyY}), spawner=entry${entryIndex}`);
+          shift.enemies.push({
+            id: Date.now().toString(),
+            x: enemyX,
+            y: enemyY,
+            pathIndex: 0,
+            health: hp,
+            pathId,
+            size,
+            reachedPit: false
+          });
+          shift.enemiesSpawned++;
+          shift.spawnTimer = 0;
         }
       }
-    } else {
+    }
+    if (shift.enemiesSpawned >= currentWave.numEnemies) {
       shift.waveState = 'delay';
       shift.waveTimer = 0;
     }
@@ -961,12 +985,13 @@ async function gameLoop(shiftId) {
         shift.activeEntries = nextWave.activeEntries;
         shift.phase = nextWave.phase;
         shift.waveInPhase = nextWave.waveInPhase;
-        shift.wave = (nextWave.phase - 1) * 4 + nextWave.waveInPhase;
+        shift.wave = shift.currentWaveIndex + 1;
         shift.waveState = 'spawning';
         shift.waveTimer = 0;
-        if (shift.currentWaveIndex % 4 === 0 && shift.currentWaveIndex > 0) {
-          shift.waveState = 'lunch';
-          shift.paused = true;
+        shift.spawnTimer = 0;
+        shift.enemiesSpawned = 0;
+        if (shift.currentWaveIndex % 5 === 0) {
+          shift.waveState = 'break';
         }
       } else {
         shift.status = 'ended';

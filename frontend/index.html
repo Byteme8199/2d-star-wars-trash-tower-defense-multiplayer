@@ -98,6 +98,19 @@
             margin: 10px;
             padding: 5px;
         }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 2s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
         .inventory-item, .toolbelt-slot, .game-toolbelt-slot {
             border: 1px solid #ffd700;
             padding: 5px;
@@ -161,6 +174,7 @@
     </div>
     <div id="locker-room" style="display: none;">
         <h2>Locker Room - Prepare Your Shift</h2>
+        <div id="shift-spinner" style="display: none;">Creating shift... <span class="spinner"></span></div>
         <div id="shift-code">Shift Code: <span id="code">Generating...</span></div>
         <div id="join-section">
             <input type="text" id="join-code" placeholder="Enter Shift Code to Join">
@@ -245,6 +259,8 @@
     </div>
 
     <button id="start-wave-btn" style="display:none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #333; border: 1px solid #ffd700; color: white; padding: 10px 20px; cursor: pointer; z-index: 1000;">Start Wave</button>
+
+    <button id="end-break-btn" style="display:none; position: fixed; top: 55%; left: 50%; transform: translate(-50%, -50%); background: #333; border: 1px solid #ffd700; color: white; padding: 10px 20px; cursor: pointer; z-index: 1000;">End Break</button>
 
     <script src="https://cdn.jsdelivr.net/npm/phaser@3.55.2/dist/phaser.min.js"></script>
     <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
