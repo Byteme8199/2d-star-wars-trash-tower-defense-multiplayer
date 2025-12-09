@@ -577,18 +577,33 @@ class GameScene extends Phaser.Scene {
     }
 
     create() {
-        // Calculate scale based on canvas size and shift world dimensions
-        this.gameScale = this.game.canvas.width / window.currentShift.worldWidth;
-        this.cellSize = window.currentShift.cellSize * this.gameScale;
-        this.gridWidth = window.currentShift.gridWidth;
-        this.gridHeight = window.currentShift.gridHeight;
+        // Fixed world: 800x600 pixels
+        const WORLD_WIDTH = 800;
+        const WORLD_HEIGHT = 600;
+        this.cellSize = 10;
+        this.gridWidth = 80;
+        this.gridHeight = 60;
+        this.gameScale = 1.0; // Fixed world, no scaling needed
 
         // Set background color
         this.cameras.main.setBackgroundColor('#000011');
 
-        // Set world bounds
-        this.physics.world.setBounds(0, 0, this.game.canvas.width, this.game.canvas.height);
-        this.cameras.main.setBounds(0, 0, this.game.canvas.width, this.game.canvas.height);
+        // Set world bounds to fixed size
+        this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+        this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+        
+        // Calculate zoom to fit player's screen nicely
+        const canvasWidth = this.game.canvas.width;
+        const canvasHeight = this.game.canvas.height;
+        const zoomX = canvasWidth / WORLD_WIDTH;
+        const zoomY = canvasHeight / WORLD_HEIGHT;
+        // Start more zoomed in for better visibility
+        const initialZoom = Math.max(1.5, Math.min(zoomX, zoomY) * 1.2);
+        this.cameras.main.setZoom(initialZoom);
+        
+        // Set zoom bounds
+        this.minZoom = 0.5;  // Can zoom out to see more of the map
+        this.maxZoom = 4.0;  // Can zoom in for detailed placement
 
         // Pause flag
         this.paused = false;
@@ -610,6 +625,7 @@ class GameScene extends Phaser.Scene {
         this.pathSprites = this.add.group();
         this.pitGraphics = this.add.graphics();
         this.scraps = this.add.group();
+        this.playerSprites = {};
         this.enemySprites = {};
         this.weaponSprites = {};
         this.projectileSprites = {};
@@ -617,11 +633,15 @@ class GameScene extends Phaser.Scene {
         this.enemies = this.add.group();
         this.projectiles = this.add.group();
 
-        // UI texts
-        this.heatText = this.add.text(10, 10, 'Heat: 0', { fontSize: '16px', fill: '#fff' });
-        this.nameText = this.add.text(10, 30, 'Name: ', { fontSize: '16px', fill: '#fff' });
-        this.creditsText = this.add.text(10, 50, 'Credits: ', { fontSize: '16px', fill: '#fff' });
-        this.phaseText = this.add.text(10, 70, 'Phase: , Wave: ', { fontSize: '16px', fill: '#fff' });
+        // UI texts - fixed to camera (not world)
+        this.heatText = this.add.text(10, 10, 'Heat: 0', { fontSize: '16px', fill: '#fff', fontFamily: 'Arial' });
+        this.heatText.setScrollFactor(0).setDepth(1000).setScale(1);
+        this.nameText = this.add.text(10, 30, 'Name: ', { fontSize: '16px', fill: '#fff', fontFamily: 'Arial' });
+        this.nameText.setScrollFactor(0).setDepth(1000).setScale(1);
+        this.creditsText = this.add.text(10, 50, 'Credits: ', { fontSize: '16px', fill: '#fff', fontFamily: 'Arial' });
+        this.creditsText.setScrollFactor(0).setDepth(1000).setScale(1);
+        this.phaseText = this.add.text(10, 70, 'Phase: , Wave: ', { fontSize: '16px', fill: '#fff', fontFamily: 'Arial' });
+        this.phaseText.setScrollFactor(0).setDepth(1000).setScale(1);
 
         // WASD keys
         this.wasd = {
@@ -633,6 +653,24 @@ class GameScene extends Phaser.Scene {
 
         // Arrow keys
         this.cursors = this.input.keyboard.createCursorKeys();
+
+        // Position tracking
+        this.weaponPositions = {};
+        this.enemyPositions = {};
+        this.lastMoveEmit = 0;
+        this.pathSquares = new Set();
+        this.pathDrawn = false;
+        this.pathSpriteMap = {};
+
+        // Create conveyor belt animation
+        if (!this.anims.exists('conveyor-move')) {
+            this.anims.create({
+                key: 'conveyor-move',
+                frames: this.anims.generateFrameNumbers('conveyor-belt', { start: 0, end: 2 }),
+                frameRate: 3,
+                repeat: -1
+            });
+        }
 
         // Pause game function
         this.pauseGame = (paused) => {
@@ -688,6 +726,14 @@ class GameScene extends Phaser.Scene {
         // Input for placing weapons
         this.input.on('pointerdown', this.placeWeapon, this);
         this.input.on('pointermove', this.onPointerMove, this);
+        
+        // Mouse wheel zoom control
+        this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY, deltaZ) => {
+            const currentZoom = this.cameras.main.zoom;
+            const zoomChange = deltaY > 0 ? -0.1 : 0.1; // Scroll down = zoom out, up = zoom in
+            const newZoom = Phaser.Math.Clamp(currentZoom + zoomChange, this.minZoom, this.maxZoom);
+            this.cameras.main.setZoom(newZoom);
+        });
 
         // Start wave button listener
         document.getElementById('start-wave-btn').addEventListener('click', () => {
@@ -705,39 +751,60 @@ class GameScene extends Phaser.Scene {
         // Handle player movement
         if (this.player) {
             let dx = 0, dy = 0;
-            if (this.wasd.a.isDown || this.cursors.left.isDown) dx -= 1.5 * this.gameScale;
-            if (this.wasd.d.isDown || this.cursors.right.isDown) dx += 1.5 * this.gameScale;
-            if (this.wasd.w.isDown || this.cursors.up.isDown) dy -= 1.5 * this.gameScale;
-            if (this.wasd.s.isDown || this.cursors.down.isDown) dy += 1.5 * this.gameScale;
+            if (this.wasd.a.isDown || this.cursors.left.isDown) dx -= 2;
+            if (this.wasd.d.isDown || this.cursors.right.isDown) dx += 2;
+            if (this.wasd.w.isDown || this.cursors.up.isDown) dy -= 2;
+            if (this.wasd.s.isDown || this.cursors.down.isDown) dy += 2;
+            
+            // Check if player is on a path and apply conveyor movement
+            let gx = Math.floor(this.player.x / this.cellSize);
+            let gy = Math.floor(this.player.y / this.cellSize);
+            const onPathKey = `${gx},${gy}`;
+            
+            if (this.pathSquares && this.pathSquares.has(onPathKey) && window.currentShift && window.currentShift.map) {
+                // Player is on conveyor belt - push towards pit
+                // Find which path the player is on
+                for (let pathData of window.currentShift.map.corePaths) {
+                    const pathIndex = pathData.squares.findIndex(sq => sq.x === gx && sq.y === gy);
+                    if (pathIndex >= 0 && pathIndex < pathData.squares.length - 1) {
+                        // Get next square in path
+                        const nextSquare = pathData.squares[pathIndex + 1];
+                        const conveyorDx = (nextSquare.x - gx) * 0.5; // Move at half waste speed
+                        const conveyorDy = (nextSquare.y - gy) * 0.5;
+                        dx += conveyorDx;
+                        dy += conveyorDy;
+                        break;
+                    }
+                }
+            }
+            
             if (dx || dy) {
                 let newX = this.player.x + dx;
                 let newY = this.player.y + dy;
-                // Clamp to bounds
-                newX = Phaser.Math.Clamp(newX, 0, this.game.canvas.width - 10 * this.gameScale);
-                newY = Phaser.Math.Clamp(newY, 0, this.game.canvas.height - 10 * this.gameScale);
-                // Check if new position is on path
-                let gx = Math.floor(newX / this.cellSize);
-                let gy = Math.floor(newY / this.cellSize);
-                if (this.pathSquares && !this.pathSquares.has(`${gx},${gy}`)) {
-                    // Check collision with weapons
-                    let playerRect = new Phaser.Geom.Rectangle(newX - 5 * this.gameScale, newY - 5 * this.gameScale, 10 * this.gameScale, 10 * this.gameScale);
-                    let canMove = true;
-                    if (this.weapons && this.weapons.children) {
-                        this.weapons.children.entries.forEach(weapon => {
-                            let weaponRect = new Phaser.Geom.Rectangle(weapon.x - weapon.width / 2, weapon.y - weapon.height / 2, weapon.width, weapon.height);
-                            if (Phaser.Geom.Rectangle.Overlaps(playerRect, weaponRect)) {
-                                canMove = false;
-                            }
-                        });
-                    }
-                    if (canMove) {
-                        this.player.x = newX;
-                        this.player.y = newY;
-                        const now = Date.now();
-                        if (now - this.lastMoveEmit > 50) {
-                            socket.emit('move', { shiftId: currentShiftId, x: this.player.x / this.gameScale, y: this.player.y / this.gameScale, userId: currentUser._id });
-                            this.lastMoveEmit = now;
+                // Clamp to world bounds (800x600)
+                newX = Phaser.Math.Clamp(newX, 5, 795);
+                newY = Phaser.Math.Clamp(newY, 5, 595);
+                
+                // Check collision with weapons only (no path collision)
+                let playerRect = new Phaser.Geom.Rectangle(newX - 5, newY - 5, 10, 10);
+                let canMove = true;
+                if (this.weapons && this.weapons.children) {
+                    this.weapons.children.entries.forEach(weapon => {
+                        let weaponRect = new Phaser.Geom.Rectangle(weapon.x - weapon.width / 2, weapon.y - weapon.height / 2, weapon.width, weapon.height);
+                        if (Phaser.Geom.Rectangle.Overlaps(playerRect, weaponRect)) {
+                            canMove = false;
                         }
+                    });
+                }
+                if (canMove) {
+                    this.player.x = newX;
+                    this.player.y = newY;
+                    // Camera follows player movement
+                    this.cameras.main.startFollow(this.player, false, 0.1, 0.1);
+                    const now = Date.now();
+                    if (now - this.lastMoveEmit > 50) {
+                        socket.emit('move', { shiftId: currentShiftId, x: this.player.x, y: this.player.y, userId: currentUser._id });
+                        this.lastMoveEmit = now;
                     }
                 }
             }
@@ -745,8 +812,8 @@ class GameScene extends Phaser.Scene {
         // Collect scraps
         if (!this.paused && this.player) {
           const playerData = window.currentShift.players.find(p => p.userId === currentUser._id);
-          if (playerData) {
-            window.currentShift.scraps.forEach(s => {
+          if (playerData && this.collectingScraps.children.entries.length === 0) {
+            for (let s of window.currentShift.scraps) {
               const dist = Math.sqrt((this.player.x - s.x * this.gameScale)**2 + (this.player.y - s.y * this.gameScale)**2);
               if (dist < playerData.pickupRadius * this.gameScale && !this.collectingScrapIds.has(s.id)) {
                 this.collectingScrapIds.add(s.id);
@@ -766,8 +833,9 @@ class GameScene extends Phaser.Scene {
                   // If no sprite found, remove from collecting to allow retry
                   this.collectingScrapIds.delete(s.id);
                 }
+                break; // Only collect one at a time
               }
-            });
+            }
           }
         }
         // Move collecting scraps towards player
@@ -792,26 +860,48 @@ class GameScene extends Phaser.Scene {
     updateFromServer(shift) {
         if (!currentUser) return;
         window.currentShift = shift;
-        if (shift.paused !== this.paused) {
+        if (shift.paused !== this.paused && shift.status !== 'planning') {
             this.pauseGame(shift.paused);
-            const player = shift.players.find(p => p.userId === currentUser._id);
-            if (shift.paused && (!player || !player.boostChoices)) {
-                showPauseModal();
-            }
+            // Removed: showPauseModal() call to prevent unwanted pause modals after boost selections
         }
         if (this.paused) return;
         // Update map if available
         if (shift.map) {
             this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
             if (!this.pathDrawn) {
-                const coreSet = new Set();
-                shift.map.corePaths.forEach(path => path.forEach(sq => coreSet.add(`${sq.x},${sq.y}`)));
+                // Build map of square to path index for coloring
+                const squareToPath = new Map();
+                shift.map.corePaths.forEach((pathData, index) => {
+                    pathData.squares.forEach(sq => {
+                        const key = `${sq.x},${sq.y}`;
+                        if (!squareToPath.has(key)) {
+                            squareToPath.set(key, {pathIndex: index, color: pathData.color});
+                        }
+                    });
+                });
+                
                 shift.map.pathSquares.forEach((square) => {
                     const key = `${square.x},${square.y}`;
                     let frame = 0; // Simplify, set all to 0
                     const sprite = this.add.sprite(square.x * this.cellSize + this.cellSize / 2, square.y * this.cellSize + this.cellSize / 2, 'conveyor-belt');
                     sprite.setFrame(frame);
                     sprite.setScale(this.gameScale);
+                    
+                    // Apply path-specific tint
+                    const pathInfo = squareToPath.get(key);
+                    if (pathInfo && pathInfo.color) {
+                        // Parse color string properly
+                        const colorValue = typeof pathInfo.color === 'string' ? 
+                            parseInt(pathInfo.color.replace('0x', ''), 16) : 
+                            pathInfo.color;
+                        sprite.setTint(colorValue);
+                        sprite.setAlpha(0.9);
+                    } else {
+                        // Default gray if no path info
+                        sprite.setTint(0x808080);
+                        sprite.setAlpha(0.8);
+                    }
+                    
                     if (this.anims.exists('conveyor-move')) {
                         sprite.play('conveyor-move');
                     }
@@ -820,23 +910,61 @@ class GameScene extends Phaser.Scene {
                         this.pathSprites.add(sprite);
                     }
                     if (!this.pathSpriteMap) this.pathSpriteMap = {};
-                    this.pathSpriteMap[key] = sprite;
+                    this.pathSpriteMap[key] = {sprite: sprite, pathInfo: pathInfo};
                 });
                 this.pathDrawn = true;
             }
-            // Update tints
-            const activeSet = new Set();
-            shift.map.corePaths.forEach((path, index) => {
-                if (shift.activeEntries.includes(index)) {
-                    path.forEach(sq => activeSet.add(`${sq.x},${sq.y}`));
+            // Update glow for active spawning paths
+            if (shift.activeEntries && shift.activeEntries.length > 0) {
+                const activeSet = new Set();
+                shift.map.corePaths.forEach((pathData, index) => {
+                    if (shift.activeEntries.includes(index)) {
+                        pathData.squares.forEach(sq => activeSet.add(`${sq.x},${sq.y}`));
+                    }
+                });
+                
+                for (const key in this.pathSpriteMap) {
+                    const data = this.pathSpriteMap[key];
+                    const sprite = data.sprite;
+                    const pathInfo = data.pathInfo;
+                    
+                    if (activeSet.has(key)) {
+                        // Add bright glow effect to active spawning paths
+                        sprite.setTint(0xFFFF00); // Bright yellow glow
+                        sprite.setAlpha(1);
+                        sprite.setScale(this.gameScale * 1.1); // Slightly larger
+                    } else if (pathInfo && pathInfo.color) {
+                        // Normal path color
+                        const colorValue = typeof pathInfo.color === 'string' ? 
+                            parseInt(pathInfo.color.replace('0x', ''), 16) : 
+                            pathInfo.color;
+                        sprite.setTint(colorValue);
+                        sprite.setAlpha(0.9);
+                        sprite.setScale(this.gameScale);
+                    } else {
+                        // Default gray if no color info
+                        sprite.setTint(0x808080);
+                        sprite.setAlpha(0.8);
+                        sprite.setScale(this.gameScale);
+                    }
                 }
-            });
-            for (const key in this.pathSpriteMap) {
-                const sprite = this.pathSpriteMap[key];
-                if (activeSet.has(key)) {
-                    sprite.setTint(0x8B0000);
-                } else {
-                    sprite.setTint(0x808080);
+            } else {
+                // No active paths - just show normal colors
+                for (const key in this.pathSpriteMap) {
+                    const data = this.pathSpriteMap[key];
+                    const sprite = data.sprite;
+                    const pathInfo = data.pathInfo;
+                    
+                    if (pathInfo && pathInfo.color) {
+                        const colorValue = typeof pathInfo.color === 'string' ? 
+                            parseInt(pathInfo.color.replace('0x', ''), 16) : 
+                            pathInfo.color;
+                        sprite.setTint(colorValue);
+                        sprite.setAlpha(0.9);
+                    } else {
+                        sprite.setTint(0x808080);
+                        sprite.setAlpha(0.8);
+                    }
                 }
             }
         }
@@ -857,6 +985,8 @@ class GameScene extends Phaser.Scene {
                     this.player = this.add.rectangle(p.x * this.gameScale, p.y * this.gameScale, 10 * this.gameScale, 10 * this.gameScale, 0x00ff00);
                     this.physics.add.existing(this.player);
                     this.player.body.setCollideWorldBounds(true);
+                    // Camera follows player smoothly
+                    this.cameras.main.startFollow(this.player, false, 0.1, 0.1);
                 }
                 // Don't update own position to prevent snapping
             } else {
@@ -991,7 +1121,7 @@ class GameScene extends Phaser.Scene {
         const progress = (player.scrap - player.previousPickupThreshold) / (player.pickupThreshold - player.previousPickupThreshold);
         const percentage = Math.min(progress * 100, 100);
         bar.style.width = percentage + '%';
-        document.getElementById('scrap-text').textContent = 'Scrap: ' + player.scrap;
+        document.getElementById('scrap-text').textContent = 'Scrap: ' + player.totalScrap;
 
         // Update scraps
         if (this.scraps) this.scraps.clear(true, true);
@@ -1044,8 +1174,12 @@ class GameScene extends Phaser.Scene {
         const selectedItem = currentUser.inventory.find(inv => inv.id === selectedId);
         if (!selectedItem) return;
         if (currentShiftId) {
-            let gx = Math.floor(pointer.x / this.cellSize);
-            let gy = Math.floor(pointer.y / this.cellSize);
+            // Convert pointer from screen space to world space (accounting for zoom)
+            const worldX = (pointer.worldX !== undefined) ? pointer.worldX : ((pointer.x / this.cameras.main.zoom) + this.cameras.main.scrollX);
+            const worldY = (pointer.worldY !== undefined) ? pointer.worldY : ((pointer.y / this.cameras.main.zoom) + this.cameras.main.scrollY);
+            
+            let gx = Math.floor(worldX / this.cellSize);
+            let gy = Math.floor(worldY / this.cellSize);
             const gridSize = WEAPON_GRID_SIZES[selectedItem.type] || {w:1,h:1};
             let gridW = gridSize.w, gridH = gridSize.h;
             let x = gx * window.currentShift.cellSize + (gridW * window.currentShift.cellSize) / 2;
@@ -1081,8 +1215,13 @@ class GameScene extends Phaser.Scene {
         if (!selectedId) return;
         const selectedItem = currentUser.inventory.find(inv => inv.id === selectedId);
         if (!selectedItem) return;
-        let gx = Math.floor(pointer.x / this.cellSize);
-        let gy = Math.floor(pointer.y / this.cellSize);
+        
+        // Convert pointer from screen space to world space (accounting for zoom)
+        const worldX = (pointer.worldX !== undefined) ? pointer.worldX : ((pointer.x / this.cameras.main.zoom) + this.cameras.main.scrollX);
+        const worldY = (pointer.worldY !== undefined) ? pointer.worldY : ((pointer.y / this.cameras.main.zoom) + this.cameras.main.scrollY);
+        
+        let gx = Math.floor(worldX / this.cellSize);
+        let gy = Math.floor(worldY / this.cellSize);
         // Get grid size
         const gridSize = WEAPON_GRID_SIZES[selectedItem.type] || {w:1,h:1};
         let gridW = gridSize.w, gridH = gridSize.h;
@@ -1338,24 +1477,16 @@ async function obtainShiftCode() {
   document.getElementById('chat').style.display = 'none';
   document.getElementById('start-shift').style.display = 'none';
   document.getElementById('licenses-btn').style.display = 'none';
-  // Calculate world dimensions based on window size, maintaining 4:3 aspect
-  let aspect = window.innerWidth / window.innerHeight;
-  let worldWidth, worldHeight;
-  if (aspect > 4/3) {
-    worldWidth = window.innerHeight * 4 / 3;
-    worldHeight = window.innerHeight;
-  } else {
-    worldWidth = window.innerWidth;
-    worldHeight = window.innerWidth * 3 / 4;
-  }
-  worldHeight = 1000; // Fixed for now
+  // Fixed world size: 800x600 (80x60 grid)
+  const worldWidth = 800;
+  const worldHeight = 600;
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 10000); // 10 second timeout
   try {
     const res = await fetch('http://localhost:3001/create-shift', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: currentUser._id, worldWidth, worldHeight }),
+      body: JSON.stringify({ userId: currentUser._id }),
       signal: controller.signal
     });
     if (res.ok) {
@@ -1558,6 +1689,9 @@ function showBoostModal(choices) {
         button.onclick = () => {
             socket.emit('choose-boost', { shiftId: currentShiftId, choiceIndex: index });
             modal.style.display = 'none';
+            if (window.currentShift.players.length === 1) {
+                socket.emit('resume-game', { shiftId: currentShiftId });
+            }
             if (gameInstance && gameInstance.scene) {
                 const scene = gameInstance.scene.getScene('GameScene');
                 if (scene) {

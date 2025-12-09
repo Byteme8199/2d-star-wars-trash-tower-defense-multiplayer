@@ -74,7 +74,8 @@ const enemySchema = new mongoose.Schema({
   pathIndex: { type: Number, default: 0 },
   pathId: { type: Number, default: 0 },
   size: { type: Number, default: 1 },
-  reachedPit: { type: Boolean, default: false }
+  reachedPit: { type: Boolean, default: false },
+  pitSlot: { type: Number, default: -1 }
 });
 
 const weaponSchema = new mongoose.Schema({
@@ -105,16 +106,16 @@ const projectileSchema = new mongoose.Schema({
 // Shift model for multiplayer shifts
 const shiftSchema = new mongoose.Schema({
   id: String,
-  players: [{ userId: String, username: String, x: Number, y: Number, inventory: [Object], boosts: [Object], scrap: {type: Number, default: 0}, boostChoices: Object, lastPlaced: {type: Number, default: 0}, pickupRadius: {type: Number, default: 20}, pickupThreshold: {type: Number, default: 100}, previousPickupThreshold: {type: Number, default: 0} }],
+  players: [{ userId: String, username: String, x: Number, y: Number, inventory: [Object], boosts: [Object], scrap: {type: Number, default: 0}, totalScrap: {type: Number, default: 0}, boostChoices: Object, lastPlaced: {type: Number, default: 0}, pickupRadius: {type: Number, default: 20}, pickupThreshold: {type: Number, default: 20}, previousPickupThreshold: {type: Number, default: 0} }],
   map: { type: Object, default: {} }, // e.g., path data
   wave: { type: Number, default: 1 },
-  overflow: { type: Number, default: 100 },
+  overflow: { type: Number, default: 20 },
   scrap: { type: Number, default: 0 },
   heat: { type: Number, default: 0 },
   enemies: [enemySchema],
   weapons: [weaponSchema],
   projectiles: [projectileSchema],
-  scraps: [{ id: String, x: Number, y: Number, value: {type: Number, default: 10} }],
+  scraps: [{ id: String, x: Number, y: Number, value: {type: Number, default: 1} }],
   status: { type: String, default: 'waiting' }, // waiting, active, ended
   ready: [{ userId: String }],
   enemiesDefeated: { type: Number, default: 0 },
@@ -471,16 +472,30 @@ app.post('/spin-gacha', async (req, res) => {
 // Routes for shifts
 app.post('/create-shift', async (req, res) => {
   try {
-    const { userId, worldWidth, worldHeight } = req.body;
-    console.log('Creating shift for userId:', userId, 'world:', worldWidth, 'x', worldHeight);
+    const { userId } = req.body;
+    console.log('Creating shift for userId:', userId);
     const user = await User.findById(userId);
     if (!user) return res.status(400).json({ message: 'User not found' });
     const shiftId = 'shift-' + Date.now();
-    const gridWidth = Math.floor(worldWidth / 10);
-    const gridHeight = Math.floor(worldHeight / 10);
+    // Fixed world: 800x600 pixels = 80x60 grid cells
+    const worldWidth = 800;
+    const worldHeight = 600;
+    const gridWidth = 80;
+    const gridHeight = 60;
     const cellSize = 10;
-    const shift = new Shift({ id: shiftId, players: [{ userId, username: user.username, x: worldWidth / 2, y: worldHeight / 2 }], ready: [], worldWidth, worldHeight, gridWidth, gridHeight, cellSize });
-    console.log('Generating map...');
+    const shift = new Shift({ 
+      id: shiftId, 
+      players: [{ userId, username: user.username, x: 400, y: 300 }], 
+      ready: [], 
+      worldWidth, 
+      worldHeight, 
+      gridWidth, 
+      gridHeight, 
+      cellSize,
+      overflow: 20,
+      pitMaxFill: 20
+    });
+    console.log('Generating map for 80x60 grid...');
     const map = generateMap(gridWidth, gridHeight);
     console.log('Generated map pit:', map.pit, 'entries:', map.entries.length, 'path length:', map.pathSquares.length, 'last square:', map.pathSquares[map.pathSquares.length - 1]);
     console.log('Map generated, saving shift...');
@@ -516,6 +531,7 @@ app.get('/global-state', async (req, res) => {
 
 // Socket.io for multiplayer
 const activeShifts = {}; // shiftId -> { shift, intervalId }
+const socketToShift = {}; // socketId -> shiftId
 
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
@@ -526,6 +542,7 @@ io.on('connection', (socket) => {
     if (!shift) return;
     socket.userId = userId;
     socket.join(shiftId);
+    socketToShift[socket.id] = shiftId;
     // Start game loop if not already running and status is active
     if (!activeShifts[shiftId] && shift.status === 'active') {
       activeShifts[shiftId] = { shift, intervalId: setInterval(() => gameLoop(shiftId), 1000 / 60) };
@@ -646,8 +663,9 @@ io.on('connection', (socket) => {
           }
           p.boosts = []; // Start with no boosts
           p.scrap = 0; // Starting scrap
+          p.totalScrap = 0; // Total scrap
           p.pickupRadius = 30; // Default pickup radius
-          p.pickupThreshold = 100; // Boost threshold
+          p.pickupThreshold = 20; // Boost threshold
           p.previousPickupThreshold = 0; // Previous threshold
         });
         shift.activeEntries = Array.from({length: shift.map.entries.length}, (_, i) => i);
@@ -670,7 +688,7 @@ io.on('connection', (socket) => {
         shift.waveInPhase = 1;
         shift.phase = 1;
         shift.pitFill = 0;
-        shift.overflow = 1000;
+        shift.overflow = 20;
         shift.status = 'planning';
         shift.paused = true;
         await shift.save();
@@ -761,6 +779,8 @@ io.on('connection', (socket) => {
         }
       }
       player.boostChoices = null;
+      player.scrap = 0;
+      player.previousPickupThreshold = 0;
       if (shift.players.length === 1) {
         shift.paused = false;
       }
@@ -797,10 +817,11 @@ io.on('connection', (socket) => {
     if (scrap) {
       const player = shift.players.find(p => p.userId === socket.userId);
       if (player) {
+        player.totalScrap += scrap.value;
         player.scrap += scrap.value;
         if (player.scrap >= player.pickupThreshold) {
           player.previousPickupThreshold = player.pickupThreshold;
-          player.pickupThreshold += 100;
+          player.pickupThreshold += Math.ceil(player.pickupThreshold * 0.35);
           const boosts = generateRandomBoosts(3);
           player.boostChoices = { id: Date.now().toString(), options: boosts };
           io.to(shiftId).emit('boost-choice', { playerId: player.userId, choices: boosts });
@@ -852,7 +873,7 @@ io.on('connection', (socket) => {
     if (!shift) return;
     const player = shift.players.find(p => p.userId === userId);
     if (!player) return;
-    const scrapEarned = player.scrap - 0;
+    const scrapEarned = player.totalScrap;
     const wavesCompleted = shift.wave - 1;
     const fullCredits = Math.floor((scrapEarned * wavesCompleted + shift.enemiesDefeated) / 100);
     let credits = Math.floor(fullCredits * 0.8);
@@ -880,9 +901,22 @@ io.on('connection', (socket) => {
     // Do not emit 'game-over' for forfeit, as alert is shown locally
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     console.log('User disconnected:', socket.id);
-    // Handle player leaving shift
+    const shiftId = socketToShift[socket.id];
+    if (shiftId) {
+      const shift = await Shift.findOne({ id: shiftId });
+      if (shift && shift.status === 'active' && shift.players.length === 1) {
+        console.log(`Stopping single-player shift ${shiftId} due to disconnect`);
+        shift.status = 'ended';
+        await shift.save();
+        if (activeShifts[shiftId]) {
+          clearInterval(activeShifts[shiftId].intervalId);
+          delete activeShifts[shiftId];
+        }
+      }
+      delete socketToShift[socket.id];
+    }
   });
 });
 
@@ -948,9 +982,9 @@ async function gameLoop(shiftId) {
       if (active.length > 0) {
         const entryIndex = active[Math.floor(Math.random() * active.length)];
         const pathId = entryIndex;
-        const path = shift.map.corePaths[pathId];
-        if (path && path.length > 0) {
-          const startSquare = path[0];
+        const pathData = shift.map.corePaths[pathId];
+        if (pathData && pathData.squares && pathData.squares.length > 0) {
+          const startSquare = pathData.squares[0];
           let enemyX = startSquare.x * shift.cellSize + shift.cellSize / 2;
           let enemyY = startSquare.y * shift.cellSize + shift.cellSize / 2;
           enemyX = Math.max(0, Math.min(shift.worldWidth - shift.cellSize, enemyX));
@@ -1006,8 +1040,9 @@ async function gameLoop(shiftId) {
       return;
     }
     if (Date.now() < shift.freezeEnd) return; // Frozen
-    const path = shift.map.corePaths[enemy.pathId];
-    if (!path) return; // Invalid path
+    const pathData = shift.map.corePaths[enemy.pathId];
+    if (!pathData || !pathData.squares) return; // Invalid path
+    const path = pathData.squares;
     let nextIndex = enemy.pathIndex + 1;
     if (nextIndex < path.length) {
       let nextSquare = path[nextIndex];
@@ -1023,13 +1058,24 @@ async function gameLoop(shiftId) {
         enemy.y += (dy / dist) * 1;
       }
     } else {
-      // reached end, stay in pit
+      // reached end, move to pit
       if (!enemy.reachedPit) {
         enemy.reachedPit = true;
         enemy.pathIndex = path.length;
-        console.log(`Enemy reached pit: id=${enemy.id}, overflow before=${shift.overflow}`);
-        shift.overflow -= 10;
-        console.log(`Overflow after=${shift.overflow}`);
+        shift.overflow -= 1; // Each waste reduces overflow by 1
+        
+        // Assign pit slot and position
+        const pitFilled = shift.enemies.filter(e => e.reachedPit && e.pitSlot >= 0).length;
+        if (pitFilled < shift.pitMaxFill) {
+          enemy.pitSlot = pitFilled;
+          // Position in pit grid (4 wide, 5 tall = 20 slots)
+          const slotX = pitFilled % 4;
+          const slotY = Math.floor(pitFilled / 4);
+          enemy.x = (shift.map.pit.x + slotX) * shift.cellSize + shift.cellSize / 2;
+          enemy.y = (shift.map.pit.y + slotY) * shift.cellSize + shift.cellSize / 2;
+        }
+        
+        console.log(`Enemy reached pit: id=${enemy.id}, slot=${enemy.pitSlot}, overflow=${shift.overflow}`);
       }
     }
   });
@@ -1050,8 +1096,9 @@ async function gameLoop(shiftId) {
     }
     const now = Date.now();
     if (now - weapon.lastFired > effectiveStats.cooldown) {
-      // Find nearest enemy in range
+      // Find nearest enemy in range (excluding those in pit)
       const nearest = shift.enemies.find(e => {
+        if (e.reachedPit) return false; // Don't target waste in pit
         const dist = Math.sqrt((e.x - weapon.x)**2 + (e.y - weapon.y)**2);
         return dist <= effectiveStats.range;
       });
@@ -1075,12 +1122,13 @@ async function gameLoop(shiftId) {
           nearest.health -= effectiveStats.power;
           if (nearest.health > 0) {
             nearest.pathIndex = Math.max(0, nearest.pathIndex - effectiveStats.knockback);
-            const newSquare = shift.map.corePaths[nearest.pathId][nearest.pathIndex];
+            const pathData = shift.map.corePaths[nearest.pathId];
+            const newSquare = pathData.squares[nearest.pathIndex];
             nearest.x = newSquare.x * shift.cellSize + shift.cellSize / 2;
             nearest.y = newSquare.y * shift.cellSize + shift.cellSize / 2;
           }
           if (nearest.health <= 0) {
-            let scrapGain = 10;
+            let scrapGain = 1;
             if (player && player.boosts) {
               player.boosts.forEach(boost => {
                 if (boost.effect.scrapMult) scrapGain = Math.floor(scrapGain * boost.effect.scrapMult);
@@ -1139,12 +1187,13 @@ async function gameLoop(shiftId) {
         target.health -= p.damage;
         if (target.health > 0) {
           target.pathIndex = Math.max(0, target.pathIndex - p.knockback);
-          const newSquare = shift.map.corePaths[target.pathId][target.pathIndex];
+          const pathData = shift.map.corePaths[target.pathId];
+          const newSquare = pathData.squares[target.pathIndex];
           target.x = newSquare.x * shift.cellSize + shift.cellSize / 2;
           target.y = newSquare.y * shift.cellSize + shift.cellSize / 2;
         }
         if (target.health <= 0) {
-          let scrapGain = 10;
+          let scrapGain = 1;
           const player = shift.players.find(pl => pl.userId === p.playerId);
           if (player && player.boosts) {
             player.boosts.forEach(boost => {
@@ -1239,58 +1288,189 @@ function isValidPath(pathSquares) {
   return true;
 }
 
-function generateMap(gridWidth, gridHeight) {
-  // Choose pit position: 4x5 grid cells
+function generateSimpleMap(gridWidth, gridHeight) {
+  // Fallback: create simple straight paths when meandering fails
   const pitWidth = 4;
   const pitHeight = 5;
+  const centerX = Math.floor(gridWidth / 2);
+  const centerY = Math.floor(gridHeight / 2);
+  
   const pit = {
-    x: Math.floor(Math.random() * (gridWidth - pitWidth)),
-    y: Math.floor(Math.random() * (gridHeight - pitHeight)),
+    x: centerX - Math.floor(pitWidth / 2),
+    y: centerY - Math.floor(pitHeight / 2),
     width: pitWidth,
     height: pitHeight
   };
-  // Choose number of entries: 2-4
+  
+  const pitCenter = { x: pit.x + Math.floor(pitWidth / 2), y: pit.y + Math.floor(pitHeight / 2) };
+  
+  // Create 3 simple straight paths from edges to pit sides
+  const entries = [
+    { start: { x: 0, y: centerY }, end: { x: pit.x - 1, y: centerY } }, // Left to left side of pit
+    { start: { x: gridWidth - 1, y: centerY }, end: { x: pit.x + pitWidth, y: centerY } }, // Right to right side of pit
+    { start: { x: centerX, y: 0 }, end: { x: centerX, y: pit.y - 1 } } // Top to top side of pit
+  ];
+  
+  const corePaths = [];
+  const allCoreSquares = new Set();
+  
+  entries.forEach((entryData, idx) => {
+    const path = [];
+    const current = {...entryData.start};
+    const target = entryData.end;
+    
+    // Simple direct path to pit edge
+    while (current.x !== target.x || current.y !== target.y) {
+      path.push({...current});
+      if (current.x < target.x) current.x++;
+      else if (current.x > target.x) current.x--;
+      else if (current.y < target.y) current.y++;
+      else if (current.y > target.y) current.y--;
+    }
+    path.push({...target});
+    
+    const pathColor = `0x${Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, '0')}`;
+    corePaths.push({squares: path, color: pathColor, id: idx});
+    path.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
+  });
+  
+  // Widen paths
+  const widenedSet = new Set();
+  for (const sqStr of allCoreSquares) {
+    const [x, y] = sqStr.split(',').map(Number);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight && 
+            !(nx >= pit.x && nx < pit.x + pit.width && ny >= pit.y && ny < pit.y + pit.height)) {
+          widenedSet.add(`${nx},${ny}`);
+        }
+      }
+    }
+  }
+  
+  const pathSquares = Array.from(widenedSet).map(s => {
+    const [x, y] = s.split(',').map(Number);
+    return { x, y };
+  });
+  
+  // Extract just the start positions for entries
+  const entriesOutput = entries.map(e => e.start);
+  
+  console.log('Generated simple fallback map with 3 straight paths');
+  return { pit, entries: entriesOutput, pathSquares, corePaths };
+}
+
+function generateMap(gridWidth, gridHeight, depth = 0) {
+  // Choose pit position: 4x5 grid cells, within 20 squares of center
+  const pitWidth = 4;
+  const pitHeight = 5;
+  const centerX = Math.floor(gridWidth / 2);
+  const centerY = Math.floor(gridHeight / 2);
+  const maxOffset = 20;
+  
+  // Calculate valid pit bounds
+  const minPitX = Math.max(0, centerX - maxOffset);
+  const maxPitX = Math.min(gridWidth - pitWidth, centerX + maxOffset - pitWidth);
+  const minPitY = Math.max(0, centerY - maxOffset);
+  const maxPitY = Math.min(gridHeight - pitHeight, centerY + maxOffset - pitHeight);
+  
+  const pit = {
+    x: minPitX + Math.floor(Math.random() * (maxPitX - minPitX + 1)),
+    y: minPitY + Math.floor(Math.random() * (maxPitY - minPitY + 1)),
+    width: pitWidth,
+    height: pitHeight
+  };
+  
+  // Pit center (needed for entry distance calculation)
+  const pitCenter = { x: pit.x + Math.floor(pitWidth / 2), y: pit.y + Math.floor(pitHeight / 2) };
+  
+  // Create edge points on pit perimeter for path endpoints
+  const pitEdges = [];
+  // Top edge
+  for (let x = pit.x; x < pit.x + pitWidth; x++) {
+    pitEdges.push({ x, y: pit.y - 1, side: 'top' });
+  }
+  // Bottom edge
+  for (let x = pit.x; x < pit.x + pitWidth; x++) {
+    pitEdges.push({ x, y: pit.y + pitHeight, side: 'bottom' });
+  }
+  // Left edge
+  for (let y = pit.y; y < pit.y + pitHeight; y++) {
+    pitEdges.push({ x: pit.x - 1, y, side: 'left' });
+  }
+  // Right edge
+  for (let y = pit.y; y < pit.y + pitHeight; y++) {
+    pitEdges.push({ x: pit.x + pitWidth, y, side: 'right' });
+  }
+  
+  // Choose number of entries: 2-4 (ensure at least 2 for multiple paths)
   const numEntries = 2 + Math.floor(Math.random() * 3);
   const entries = [];
+  const pitEndpoints = []; // Store which pit edge each entry connects to
+  const minDistFromPit = 35; // Ensure entries are far enough for 60+ cell paths
+  
   for (let i = 0; i < numEntries; i++) {
-    let ex, ey;
+    let ex, ey, attempts = 0;
     do {
       ex = Math.floor(Math.random() * gridWidth);
       ey = Math.floor(Math.random() * gridHeight);
-    } while (ex >= pit.x && ex < pit.x + pitWidth && ey >= pit.y && ey < pit.y + pitHeight);
-    entries.push({ x: ex, y: ey });
+      // Calculate distance from pit center
+      const distFromPit = Math.sqrt(
+        Math.pow(ex - pitCenter.x, 2) + 
+        Math.pow(ey - pitCenter.y, 2)
+      );
+      attempts++;
+      // Entry must be far from pit and not inside it
+      if (distFromPit >= minDistFromPit && 
+          !(ex >= pit.x && ex < pit.x + pitWidth && ey >= pit.y && ey < pit.y + pitHeight)) {
+        break;
+      }
+    } while (attempts < 100);
+    
+    if (attempts < 100) {
+      entries.push({ x: ex, y: ey });
+      // Assign a random pit edge endpoint for this entry
+      const pitEndpoint = pitEdges[Math.floor(Math.random() * pitEdges.length)];
+      pitEndpoints.push(pitEndpoint);
+    }
   }
-  // Pit center
-  const pitCenter = { x: pit.x + Math.floor(pitWidth / 2), y: pit.y + Math.floor(pitHeight / 2) };
-  // Generate paths from each entry to pit center
+  
+  // Generate paths from each entry to its assigned pit edge
   const corePaths = [];
   const allCoreSquares = new Set();
-  for (const entry of entries) {
-    const path = generatePath(entry, pitCenter, gridWidth, gridHeight);
-    if (path && path.length >= 30) { // Min 30 grid units
-      corePaths.push(path);
+  
+  console.log(`Attempting to generate ${entries.length} paths with min length 40`);
+  
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const pitEnd = pitEndpoints[i];
+    // Generate path to pit edge instead of center
+    const path = generatePath(entry, pitEnd, gridWidth, gridHeight);
+    console.log(`Path from (${entry.x},${entry.y}) to pit edge (${pitEnd.x},${pitEnd.y}): length=${path ? path.length : 0}`);
+    if (path && path.length >= 40) { // Min 40 grid units
+      // Assign random distinct color to this path
+      const pathColor = `0x${Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, '0')}`;
+      corePaths.push({squares: path, color: pathColor, id: corePaths.length});
       path.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
     }
   }
-  // If no valid paths, fallback to single path
-  if (corePaths.length === 0) {
-    const fallbackEntry = entries[0] || { x: 0, y: Math.floor(gridHeight / 2) };
-    let path = generatePath(fallbackEntry, pitCenter, gridWidth, gridHeight);
-    if (!path || path.length < 30) {
-      // Create a longer fallback path by adding intermediate points
-      path = [fallbackEntry];
-      const steps = 30;
-      for (let i = 1; i < steps; i++) {
-        const t = i / steps;
-        const x = Math.round(fallbackEntry.x + t * (pitCenter.x - fallbackEntry.x));
-        const y = Math.round(fallbackEntry.y + t * (pitCenter.y - fallbackEntry.y));
-        path.push({ x, y });
-      }
-      path.push(pitCenter);
+  
+  // If we don't have at least 2 valid paths, regenerate the entire map
+  if (corePaths.length < 2) {
+    console.log(`Only ${corePaths.length} valid paths generated, regenerating map...`);
+    if (!depth) depth = 0;
+    if (depth > 10) {
+      console.error('Max recursion depth reached, using fallback simple paths');
+      // Fallback: create simple direct paths
+      return generateSimpleMap(gridWidth, gridHeight);
     }
-    corePaths.push(path);
-    path.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
+    return generateMap(gridWidth, gridHeight, depth + 1);
   }
+  
+  console.log(`Successfully generated ${corePaths.length} valid paths`);
+  
   // Widen to 3x3 around all core squares, excluding pit
   const widenedSet = new Set();
   for (const sqStr of allCoreSquares) {
@@ -1313,78 +1493,123 @@ function generateMap(gridWidth, gridHeight) {
 }
 
 function generatePath(start, end, gridWidth, gridHeight) {
-  // Dijkstra with min 5 max 10 straight
-  const dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]]; // up, right, down, left
-  const dist = new Map();
-  const cameFrom = new Map();
-  const visited = new Set();
-  const startKey = `${start.x},${start.y},-1,0`;
-  dist.set(startKey, 0);
-  cameFrom.set(startKey, null);
-  const pq = new MinHeap();
-  pq.push([0, startKey]);
-  let found = false;
-  let endKey = null;
-  while (!pq.isEmpty()) {
-    const [cost, current] = pq.pop();
-    if (visited.has(current)) continue;
-    visited.add(current);
-    const [cx, cy, cdir, csteps] = current.split(',').map((v, i) => i < 2 ? Number(v) : (i === 2 ? (v === '-1' ? -1 : Number(v)) : Number(v)));
-    if (cx === end.x && cy === end.y) {
-      found = true;
-      endKey = current;
-      break;
-    }
-    for (const [dx, dy] of dirs) {
-      const nx = cx + dx;
-      const ny = cy + dy;
-      if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight) {
-        const newdir = dirs.findIndex(d => d[0] === dx && d[1] === dy);
-        let canMove = false;
-        let newsteps;
-        if (cdir === -1) {
-          canMove = true;
-          newsteps = 1;
-        } else if (newdir === cdir) {
-          if (csteps < 10) {
-            canMove = true;
-            newsteps = csteps + 1;
-          }
-        } else {
-          if (csteps >= 5) {
-            canMove = true;
-            newsteps = 1;
+  // Goal-biased meandering path generator
+  const path = [{x: start.x, y: start.y}];
+  const visited = new Set([`${start.x},${start.y}`]);
+  const dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]]; // down, right, up, left
+  
+  let current = {x: start.x, y: start.y};
+  let currentDir = -1; // No initial direction
+  const maxSteps = 500;
+  let steps = 0;
+  
+  const isValid = (x, y) => {
+    return x >= 0 && x < gridWidth && y >= 0 && y < gridHeight && !visited.has(`${x},${y}`);
+  };
+  
+  const getTowardsGoal = () => {
+    const dx = end.x - current.x;
+    const dy = end.y - current.y;
+    const options = [];
+    if (dx > 0) options.push(1); // right
+    if (dx < 0) options.push(3); // left
+    if (dy > 0) options.push(0); // down
+    if (dy < 0) options.push(2); // up
+    return options;
+  };
+  
+  while (steps < maxSteps && (current.x !== end.x || current.y !== end.y)) {
+    steps++;
+    
+    const distToEnd = Math.abs(current.x - end.x) + Math.abs(current.y - end.y);
+    
+    // Decide action based on distance and randomness
+    let nextDir = -1;
+    
+    if (distToEnd <= 3) {
+      // Close to end - go direct
+      const goalDirs = getTowardsGoal();
+      for (const dir of goalDirs) {
+        const [dx, dy] = dirs[dir];
+        if (isValid(current.x + dx, current.y + dy)) {
+          nextDir = dir;
+          break;
+        }
+      }
+    } else {
+      const rand = Math.random();
+      
+      if (rand < 0.6) {
+        // 60% - Move towards goal
+        const goalDirs = getTowardsGoal();
+        const validGoalDirs = goalDirs.filter(dir => {
+          const [dx, dy] = dirs[dir];
+          return isValid(current.x + dx, current.y + dy);
+        });
+        if (validGoalDirs.length > 0) {
+          nextDir = validGoalDirs[Math.floor(Math.random() * validGoalDirs.length)];
+        }
+      } else if (rand < 0.85) {
+        // 25% - Continue same direction (straightaway)
+        if (currentDir >= 0) {
+          const [dx, dy] = dirs[currentDir];
+          if (isValid(current.x + dx, current.y + dy)) {
+            nextDir = currentDir;
           }
         }
-        if (canMove) {
-          const newCost = cost + 1;
-          const nkey = `${nx},${ny},${newdir},${newsteps}`;
-          if (!dist.has(nkey) || newCost < dist.get(nkey)) {
-            dist.set(nkey, newCost);
-            cameFrom.set(nkey, current);
-            pq.push([newCost, nkey]);
+      } else {
+        // 15% - Turn 90 degrees (curve)
+        if (currentDir >= 0) {
+          const turnDir = Math.random() < 0.5 ? 1 : -1;
+          const newDir = (currentDir + turnDir + 4) % 4;
+          const [dx, dy] = dirs[newDir];
+          if (isValid(current.x + dx, current.y + dy)) {
+            nextDir = newDir;
           }
         }
       }
     }
-  }
-  if (!found) return null;
-  // Reconstruct path
-  const path = [];
-  let current = endKey;
-  while (current) {
-    const [x, y] = current.split(',').slice(0, 2).map(Number);
-    path.unshift({ x, y });
-    current = cameFrom.get(current);
-  }
-  // Remove consecutive duplicates
-  const uniquePath = [];
-  for (let sq of path) {
-    if (uniquePath.length === 0 || uniquePath[uniquePath.length - 1].x !== sq.x || uniquePath[uniquePath.length - 1].y !== sq.y) {
-      uniquePath.push(sq);
+    
+    // If no direction chosen, pick any valid direction
+    if (nextDir === -1) {
+      const validDirs = dirs
+        .map((d, i) => ({dir: i, x: current.x + d[0], y: current.y + d[1]}))
+        .filter(d => isValid(d.x, d.y));
+      
+      if (validDirs.length === 0) {
+        // Dead end - backtrack not implemented, return what we have
+        console.log(`Path generation dead end at (${current.x},${current.y}), length=${path.length}`);
+        return path.length >= 20 ? path : null;
+      }
+      
+      // Prefer directions towards goal
+      const goalDirs = getTowardsGoal();
+      const goalValid = validDirs.filter(d => goalDirs.includes(d.dir));
+      
+      if (goalValid.length > 0) {
+        const chosen = goalValid[Math.floor(Math.random() * goalValid.length)];
+        nextDir = chosen.dir;
+      } else {
+        const chosen = validDirs[Math.floor(Math.random() * validDirs.length)];
+        nextDir = chosen.dir;
+      }
     }
+    
+    // Move in chosen direction
+    const [dx, dy] = dirs[nextDir];
+    current = {x: current.x + dx, y: current.y + dy};
+    path.push({...current});
+    visited.add(`${current.x},${current.y}`);
+    currentDir = nextDir;
   }
-  return uniquePath;
+  
+  // Check if we reached the goal
+  if (current.x === end.x && current.y === end.y) {
+    return path;
+  }
+  
+  console.log(`Path failed to reach goal, ended at (${current.x},${current.y}), length=${path.length}`);
+  return path.length >= 30 ? path : null;
 }
 
 class MinHeap {

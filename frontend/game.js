@@ -12,11 +12,24 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
+    // Fixed world size
+    const WORLD_WIDTH = 800;
+    const WORLD_HEIGHT = 600;
+    this.cellSize = 10;
+    this.gridWidth = 80;
+    this.gridHeight = 60;
+    
     this.cameras.main.setBackgroundColor('#000011');
-    this.physics.world.setBounds(0, 0, 800, 600);
-    this.cellSize = window.GAME_CONSTANTS.cellSize;
-    this.gridWidth = window.GAME_CONSTANTS.gridWidth;
-    this.gridHeight = window.GAME_CONSTANTS.gridHeight;
+    this.physics.world.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    this.cameras.main.setBounds(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    
+    // Calculate zoom based on canvas size
+    const canvasWidth = this.game.canvas.width;
+    const canvasHeight = this.game.canvas.height;
+    const zoomX = canvasWidth / WORLD_WIDTH;
+    const zoomY = canvasHeight / WORLD_HEIGHT;
+    this.cameras.main.setZoom(Math.max(1, Math.min(zoomX, zoomY) * 0.8));
+    
     this.pathSquares = new Set();
     this.graphics = this.add.graphics();
     this.pathSprites = this.add.group();
@@ -28,11 +41,11 @@ class GameScene extends Phaser.Scene {
     });
     this.gridGraphics = this.add.graphics();
     this.gridGraphics.lineStyle(1, 0x121212);
-    for (let x = 0; x <= 800; x += this.cellSize) {
-      this.gridGraphics.lineBetween(x, 0, x, 600);
+    for (let x = 0; x <= WORLD_WIDTH; x += this.cellSize) {
+      this.gridGraphics.lineBetween(x, 0, x, WORLD_HEIGHT);
     }
-    for (let y = 0; y <= 600; y += this.cellSize) {
-      this.gridGraphics.lineBetween(0, y, 800, y);
+    for (let y = 0; y <= WORLD_HEIGHT; y += this.cellSize) {
+      this.gridGraphics.lineBetween(0, y, WORLD_WIDTH, y);
     }
     this.enemies = this.add.group();
     this.weapons = this.add.group();
@@ -110,18 +123,18 @@ class GameScene extends Phaser.Scene {
       if (dx || dy) {
         let newX = this.player.x + dx;
         let newY = this.player.y + dy;
-        newX = Phaser.Math.Clamp(newX, 0, 780);
-        newY = Phaser.Math.Clamp(newY, 0, 580);
-        let gx = Math.floor(newX / this.cellSize);
-        let gy = Math.floor(newY / this.cellSize);
-        if (!this.pathSquares.has(`${gx},${gy}`)) {
-          this.player.x = newX;
-          this.player.y = newY;
-          const now = Date.now();
-          if (now - this.lastMoveEmit > window.GAME_CONSTANTS.moveThrottle) {
-            window.stateManager.socket.emit('move', { shiftId: window.stateManager.currentShiftId, x: this.player.x, y: this.player.y, userId: window.stateManager.currentUser._id });
-            this.lastMoveEmit = now;
-          }
+        // Clamp to full world bounds
+        newX = Phaser.Math.Clamp(newX, 5, 795);
+        newY = Phaser.Math.Clamp(newY, 5, 595);
+        // Allow movement on paths (no path collision check)
+        this.player.x = newX;
+        this.player.y = newY;
+        // Camera follows player smoothly
+        this.cameras.main.startFollow(this.player, false, 0.1, 0.1);
+        const now = Date.now();
+        if (now - this.lastMoveEmit > window.GAME_CONSTANTS.moveThrottle) {
+          window.stateManager.socket.emit('move', { shiftId: window.stateManager.currentShiftId, x: this.player.x, y: this.player.y, userId: window.stateManager.currentUser._id });
+          this.lastMoveEmit = now;
         }
       }
     }
@@ -175,9 +188,28 @@ class GameScene extends Phaser.Scene {
     if (shift.map && !this.enemyPath) {
       this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
       if (this.pathSprites) this.pathSprites.clear(true, true);
+      
+      // Build map of square to path color
+      const squareToColor = new Map();
+      shift.map.corePaths.forEach((pathData) => {
+        pathData.squares.forEach(sq => {
+          const key = `${sq.x},${sq.y}`;
+          if (!squareToColor.has(key)) {
+            squareToColor.set(key, pathData.color);
+          }
+        });
+      });
+      
       shift.map.pathSquares.forEach((square, index) => {
         const sprite = this.add.sprite(square.x * this.cellSize + 5, square.y * this.cellSize + 5, 'conveyor-belt');
         sprite.setDisplaySize(this.cellSize, this.cellSize);
+        
+        // Apply path-specific tint
+        const color = squareToColor.get(`${square.x},${square.y}`);
+        if (color) {
+          sprite.setTint(parseInt(color));
+        }
+        
         const nextSquare = shift.map.pathSquares[index + 1];
         if (nextSquare) {
           const dx = nextSquare.x - square.x;
@@ -201,6 +233,8 @@ class GameScene extends Phaser.Scene {
           this.player = this.add.rectangle(p.x, p.y, 10, 10, 0x00ff00);
           this.physics.add.existing(this.player);
           this.player.body.setCollideWorldBounds(true);
+          // Camera follows player with smooth lerp
+          this.cameras.main.startFollow(this.player, false, 0.1, 0.1);
         }
       } else {
         if (!this.playerSprites[p.userId]) {

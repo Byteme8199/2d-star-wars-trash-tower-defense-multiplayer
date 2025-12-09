@@ -156,13 +156,16 @@ function setupSocketHandlers(io) {
       if (!scrap) return;
       const distance = Math.sqrt((player.x - scrap.x) ** 2 + (player.y - scrap.y) ** 2);
       if (distance > player.pickupRadius) return;
+      player.totalScrap += scrap.value;
       player.scrap += scrap.value;
       shift.scraps = shift.scraps.filter(s => s.id !== scrapId);
       // Check for boost threshold
       if (player.scrap >= player.pickupThreshold) {
         player.previousPickupThreshold = player.pickupThreshold;
-        player.pickupThreshold += shift.boostInterval;
-        player.boostChoices = generateRandomBoosts(3);
+        player.pickupThreshold += Math.ceil(player.pickupThreshold * 0.35);
+        const boosts = generateRandomBoosts(3);
+        player.boostChoices = { id: Date.now().toString(), options: boosts };
+        io.to(shiftId).emit('boost-choice', { playerId: player.userId, choices: boosts });
       }
       await shift.save();
       io.to(shiftId).emit('shift-update', shift);
