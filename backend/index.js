@@ -1023,19 +1023,53 @@ async function gameLoop(shiftId) {
         const pathId = entryIndex;
         const pathData = shift.map.corePaths[pathId];
         if (pathData && pathData.squares && pathData.squares.length > 0) {
-          const startSquare = pathData.squares[0];
-          let enemyX = startSquare.x * shift.cellSize + shift.cellSize / 2;
-          let enemyY = startSquare.y * shift.cellSize + shift.cellSize / 2;
+          // Generate waste first to know its size
+          const isBoss = (shift.currentWaveIndex + 1) % 5 === 0 && shift.enemiesSpawned === 0;
+          const waste = generateWaste(shift.currentWaveIndex + 1, isBoss);
+          
+          // Find a free spawn position - check if spawn point is occupied
+          let spawnIndex = 0;
+          let spawnSquare = pathData.squares[spawnIndex];
+          
+          // Check if spawn point is blocked by existing waste
+          const isSpawnBlocked = shift.enemies.some(existing => {
+            if (existing.pathId !== pathId) return false; // Different path
+            const existingGridX = Math.floor(existing.x / shift.cellSize);
+            const existingGridY = Math.floor(existing.y / shift.cellSize);
+            const existingSize = existing.gridWidth || 1;
+            const wasteSize = waste.gridWidth || 1;
+            
+            // Check if spawn area overlaps with existing waste
+            for (let dx = 0; dx < wasteSize; dx++) {
+              for (let dy = 0; dy < wasteSize; dy++) {
+                for (let eDx = 0; eDx < existingSize; eDx++) {
+                  for (let eDy = 0; eDy < existingSize; eDy++) {
+                    if (spawnSquare.x + dx === existingGridX + eDx && 
+                        spawnSquare.y + dy === existingGridY + eDy) {
+                      return true;
+                    }
+                  }
+                }
+              }
+            }
+            return false;
+          });
+          
+          // If spawn point is blocked, try spawning 1-3 squares back on the path
+          if (isSpawnBlocked && pathData.squares.length > 3) {
+            spawnIndex = Math.min(3, pathData.squares.length - 1);
+            spawnSquare = pathData.squares[spawnIndex];
+          }
+          
+          let enemyX = spawnSquare.x * shift.cellSize + shift.cellSize / 2;
+          let enemyY = spawnSquare.y * shift.cellSize + shift.cellSize / 2;
           enemyX = Math.max(0, Math.min(shift.worldWidth - shift.cellSize, enemyX));
           enemyY = Math.max(0, Math.min(shift.worldHeight - shift.cellSize, enemyY));
           
-          // Generate waste using new system
-          const isBoss = (shift.currentWaveIndex + 1) % 5 === 0 && shift.enemiesSpawned === 0; // First enemy of every 5th wave is boss
-          const waste = generateWaste(shift.currentWaveIndex + 1, isBoss);
           waste.x = enemyX;
           waste.y = enemyY;
           waste.pathId = pathId;
-          waste.pathIndex = 0;
+          waste.pathIndex = spawnIndex;
           waste.health = waste.hp; // Ensure health is set
           
           console.log(`${new Date().toISOString()} Spawning ${waste.rarity} waste: ${waste.name}, HP=${waste.hp}, size=${waste.gridWidth}x${waste.gridHeight}, position=(${enemyX}, ${enemyY}), spawner=entry${entryIndex}`);
@@ -1093,6 +1127,7 @@ async function gameLoop(shiftId) {
         size: (enemy.size || 1) * (enemy.size || 1),
         toughness: upgradedWaste.toughness,
         density: upgradedWaste.density,
+        reachedPit: enemy.reachedPit || false,
         value: upgradedWaste.value,
         specialAbility: upgradedWaste.specialAbility,
         specialAbilityData: upgradedWaste.specialAbilityData,
@@ -1119,23 +1154,74 @@ async function gameLoop(shiftId) {
       let nextSquare = path[nextIndex];
       let targetX = nextSquare.x * shift.cellSize + shift.cellSize / 2;
       let targetY = nextSquare.y * shift.cellSize + shift.cellSize / 2;
+      
+      // Check if next square is blocked by another waste OR if this waste can fit
+      const mySize = enemy.gridWidth || 1;
+      const myGridX = Math.floor(enemy.x / shift.cellSize);
+      const myGridY = Math.floor(enemy.y / shift.cellSize);
+      
+      const isBlocked = shift.enemies.some(otherEnemy => {
+        if (otherEnemy.id === enemy.id) return false; // Don't check self
+        if (otherEnemy.reachedPit) return false; // Ignore waste in pit
+        
+        // Check if other waste is on or near the next square(s) we need
+        const otherGridX = Math.floor(otherEnemy.x / shift.cellSize);
+        const otherGridY = Math.floor(otherEnemy.y / shift.cellSize);
+        const otherSize = otherEnemy.gridWidth || 1;
+        
+        // For multi-cell waste, check if we need space for our full size at the next position
+        for (let myDx = 0; myDx < mySize; myDx++) {
+          for (let myDy = 0; myDy < mySize; myDy++) {
+            const neededX = nextSquare.x + myDx;
+            const neededY = nextSquare.y + myDy;
+            
+            // Check if other waste occupies this needed cell
+            for (let otherDx = 0; otherDx < otherSize; otherDx++) {
+              for (let otherDy = 0; otherDy < otherSize; otherDy++) {
+                if (otherGridX + otherDx === neededX && otherGridY + otherDy === neededY) {
+                  return true;
+                }
+              }
+            }
+          }
+        }
+        return false;
+      });
+      
       let dx = targetX - enemy.x;
       let dy = targetY - enemy.y;
       let dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 0.5) {
+      
+      if (dist < 0.5 && !isBlocked) {
+        // Only advance pathIndex if we're close AND not blocked
         enemy.pathIndex = nextIndex;
-      } else {
+      } else if (!isBlocked) {
+        // Only move toward next square if not blocked
         enemy.x += (dx / dist) * speed;
         enemy.y += (dy / dist) * speed;
+      } else {
+        // If blocked, snap to current path position to prevent drifting off-path
+        const currentSquare = path[enemy.pathIndex];
+        const currentTargetX = currentSquare.x * shift.cellSize + shift.cellSize / 2;
+        const currentTargetY = currentSquare.y * shift.cellSize + shift.cellSize / 2;
+        const driftDist = Math.sqrt((enemy.x - currentTargetX)**2 + (enemy.y - currentTargetY)**2);
+        
+        // If drifted too far from current path position, snap back
+        if (driftDist > shift.cellSize / 4) {
+          enemy.x = currentTargetX;
+          enemy.y = currentTargetY;
+        }
       }
     } else {
       // reached end, move to pit
-      if (!enemy.reachedPit) {
+      if (!enemy.reachedPit && nextIndex >= path.length) {
         enemy.reachedPit = true;
         enemy.pathIndex = path.length;
         // Reduce overflow by waste size (1x1 = 1, 2x2 = 4, 3x3 = 9)
         const wasteSize = enemy.size || (enemy.gridWidth * enemy.gridHeight) || 1;
         shift.overflow -= wasteSize;
+        
+        console.log(`Enemy ${enemy.name} reached pit: size=${wasteSize}, overflow now=${shift.overflow}`);
         
         // Assign pit slot and position
         const pitFilled = shift.enemies.filter(e => e.reachedPit && e.pitSlot >= 0).length;
@@ -1522,7 +1608,7 @@ function generateMap(gridWidth, gridHeight, depth = 0) {
         const branchIndex = Math.floor(originalMainPath.length * (0.3 + Math.random() * 0.4));
         const branchStart = originalMainPath[branchIndex];
         
-        console.log(`  Branch ${b} starting from (${branchStart.x},${branchStart.y})`);
+        console.log(`  Branch ${b} starting from (${branchStart.x},${branchStart.y}), will merge at index ${branchIndex}`);
         
         // Generate branch path
         const branchPath = generateBranchPath(branchStart, pit, gridWidth, gridHeight, allCoreSquares);
@@ -1533,9 +1619,14 @@ function generateMap(gridWidth, gridHeight, depth = 0) {
           entries.push(branchSpawnPoint);
           entryToMainPath.push(successfulMainPaths - 1); // Branch belongs to the current main path (which was just incremented)
           
-          corePaths.push({squares: reversedBranch, color: pathColor, id: pathIdCounter++});
+          // MERGE: Append the main path portion from branch junction to pit
+          // The branch goes from spawn -> junction, then we add junction -> pit from main path
+          const mainPathFromJunction = reversedMainPath.slice(reversedMainPath.length - branchIndex);
+          const mergedPath = [...reversedBranch, ...mainPathFromJunction];
+          
+          corePaths.push({squares: mergedPath, color: pathColor, id: pathIdCounter++});
           reversedBranch.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
-          console.log(`  Branch ${b}: length=${branchPath.length}, endpoint=(${branchSpawnPoint.x},${branchSpawnPoint.y})`);
+          console.log(`  Branch ${b}: branch length=${branchPath.length}, merged total=${mergedPath.length}, endpoint=(${branchSpawnPoint.x},${branchSpawnPoint.y})`);
         } else {
           console.log(`  Branch ${b} failed: length=${branchPath ? branchPath.length : 0}`);
         }

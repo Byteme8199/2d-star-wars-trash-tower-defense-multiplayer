@@ -140,9 +140,19 @@ function generateWaste(waveNumber = 1, isBoss = false) {
 
   // Select size (larger sizes for higher rarities and bosses)
   const rarityIndex = Object.keys(RARITIES).indexOf(rarity.name);
-  let maxSize = isBoss ? 3 : Math.min(3, 1 + Math.floor(rarityIndex / 2));
-  const gridWidth = Math.floor(Math.random() * maxSize) + 1;
-  const gridHeight = Math.floor(Math.random() * maxSize) + 1;
+  // Common: 1, Uncommon: 1-2, Rare: 1-2, Epic: 1-3, Legendary: 1-3, Boss: 2-3
+  let maxSize;
+  if (isBoss) {
+    maxSize = 2 + Math.floor(Math.random() * 2); // 2 or 3
+  } else if (rarityIndex === 0) {
+    maxSize = 1; // Common always 1x1
+  } else if (rarityIndex <= 2) {
+    maxSize = Math.random() < 0.7 ? 1 : 2; // Uncommon/Rare: 70% 1x1, 30% 2x2
+  } else {
+    maxSize = Math.random() < 0.5 ? 2 : 3; // Epic/Legendary: 50% 2x2, 50% 3x3
+  }
+  const gridWidth = maxSize;
+  const gridHeight = maxSize;
   const sizeKey = Math.max(gridWidth, gridHeight);
 
   // Get base stats
