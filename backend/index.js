@@ -91,7 +91,10 @@ const enemySchema = new mongoose.Schema({
   pathIndex: { type: Number, default: 0 },
   pathId: { type: Number, default: 0 },
   reachedPit: { type: Boolean, default: false },
-  pitSlot: { type: Number, default: -1 }
+  pitSlot: { type: Number, default: -1 },
+  pitGridX: { type: Number, default: -1 },
+  pitGridY: { type: Number, default: -1 },
+  blockedTime: { type: Number, default: 0 }
 }, { strict: false });
 
 const weaponSchema = new mongoose.Schema({
@@ -150,6 +153,7 @@ const shiftSchema = new mongoose.Schema({
   activeEntries: [Number],
   pitFill: { type: Number, default: 0 },
   pitMaxFill: { type: Number, default: 20 },
+  pitGrid: { type: [[Boolean]], default: null },
   waves: [{ phase: Number, waveInPhase: Number, activeEntries: [Number], spawnRate: Number, enemyHp: Number, numEnemies: Number, spawnInterval: Number }],
   currentWaveIndex: { type: Number, default: 0 },
   waveTimer: { type: Number, default: 0 },
@@ -1080,6 +1084,13 @@ async function gameLoop(shiftId) {
       }
     }
     if (shift.enemiesSpawned >= currentWave.numEnemies) {
+      shift.waveState = 'clearing';
+      shift.waveTimer = 0;
+    }
+  } else if (shift.waveState === 'clearing') {
+    // Wait for all enemies to be defeated or reach pit before advancing
+    const activeEnemies = shift.enemies.filter(e => !e.reachedPit).length;
+    if (activeEnemies === 0) {
       shift.waveState = 'delay';
       shift.waveTimer = 0;
     }
@@ -1200,13 +1211,67 @@ async function gameLoop(shiftId) {
         enemy.x += (dx / dist) * speed;
         enemy.y += (dy / dist) * speed;
       } else {
-        // If blocked, snap to current path position to prevent drifting off-path
+        // If blocked, track how long we've been stuck
+        if (!enemy.blockedTime) {
+          enemy.blockedTime = 0;
+        }
+        enemy.blockedTime += 0.1; // 100ms per tick
+        
+        // If stuck for more than 2 seconds, resolve deadlock
+        if (enemy.blockedTime > 2) {
+          // Find the blocking waste
+          const blockingWaste = shift.enemies.find(otherEnemy => {
+            if (otherEnemy.id === enemy.id) return false;
+            if (otherEnemy.reachedPit) return false;
+            
+            const otherGridX = Math.floor(otherEnemy.x / shift.cellSize);
+            const otherGridY = Math.floor(otherEnemy.y / shift.cellSize);
+            const otherSize = otherEnemy.gridWidth || 1;
+            
+            for (let myDx = 0; myDx < mySize; myDx++) {
+              for (let myDy = 0; myDy < mySize; myDy++) {
+                const neededX = nextSquare.x + myDx;
+                const neededY = nextSquare.y + myDy;
+                
+                for (let otherDx = 0; otherDx < otherSize; otherDx++) {
+                  for (let otherDy = 0; otherDy < otherSize; otherDy++) {
+                    if (otherGridX + otherDx === neededX && otherGridY + otherDy === neededY) {
+                      return true;
+                    }
+                  }
+                }
+              }
+            }
+            return false;
+          });
+          
+          // 50/50 chance to let this waste or the blocking waste continue
+          if (Math.random() < 0.5) {
+            // This waste wins - teleport slightly forward to break deadlock
+            enemy.pathIndex = nextIndex;
+            enemy.x = targetX;
+            enemy.y = targetY;
+            enemy.blockedTime = 0;
+            console.log(`Deadlock broken: ${enemy.name} pushed through`);
+          } else if (blockingWaste) {
+            // Other waste wins - let it advance
+            blockingWaste.pathIndex++;
+            if (blockingWaste.pathIndex < path.length) {
+              const blockingNextSquare = path[blockingWaste.pathIndex];
+              blockingWaste.x = blockingNextSquare.x * shift.cellSize + shift.cellSize / 2;
+              blockingWaste.y = blockingNextSquare.y * shift.cellSize + shift.cellSize / 2;
+            }
+            blockingWaste.blockedTime = 0;
+            console.log(`Deadlock broken: ${blockingWaste.name} pushed through`);
+          }
+        }
+        
+        // Snap to current path position to prevent drifting off-path
         const currentSquare = path[enemy.pathIndex];
         const currentTargetX = currentSquare.x * shift.cellSize + shift.cellSize / 2;
         const currentTargetY = currentSquare.y * shift.cellSize + shift.cellSize / 2;
         const driftDist = Math.sqrt((enemy.x - currentTargetX)**2 + (enemy.y - currentTargetY)**2);
         
-        // If drifted too far from current path position, snap back
         if (driftDist > shift.cellSize / 4) {
           enemy.x = currentTargetX;
           enemy.y = currentTargetY;
@@ -1217,24 +1282,66 @@ async function gameLoop(shiftId) {
       if (!enemy.reachedPit && nextIndex >= path.length) {
         enemy.reachedPit = true;
         enemy.pathIndex = path.length;
-        // Reduce overflow by waste size (1x1 = 1, 2x2 = 4, 3x3 = 9)
-        const wasteSize = enemy.size || (enemy.gridWidth * enemy.gridHeight) || 1;
-        shift.overflow -= wasteSize;
         
-        console.log(`Enemy ${enemy.name} reached pit: size=${wasteSize}, overflow now=${shift.overflow}`);
+        const wasteWidth = enemy.gridWidth || 1;
+        const wasteHeight = enemy.gridHeight || 1;
+        const wasteSize = wasteWidth * wasteHeight;
         
-        // Assign pit slot and position
-        const pitFilled = shift.enemies.filter(e => e.reachedPit && e.pitSlot >= 0).length;
-        if (pitFilled < shift.pitMaxFill) {
-          enemy.pitSlot = pitFilled;
-          // Position in pit grid (4 wide, 5 tall = 20 slots)
-          const slotX = pitFilled % 4;
-          const slotY = Math.floor(pitFilled / 4);
-          enemy.x = (shift.map.pit.x + slotX) * shift.cellSize + shift.cellSize / 2;
-          enemy.y = (shift.map.pit.y + slotY) * shift.cellSize + shift.cellSize / 2;
+        // Initialize pit grid if not exists (4 wide x 5 tall = 20 spaces)
+        if (!shift.pitGrid) {
+          shift.pitGrid = Array(5).fill(null).map(() => Array(4).fill(false));
         }
         
-        console.log(`Enemy reached pit: id=${enemy.id}, slot=${enemy.pitSlot}, overflow=${shift.overflow}`);
+        // Find a position in the pit grid that can fit this waste
+        let placed = false;
+        let pitSlotX = -1;
+        let pitSlotY = -1;
+        
+        for (let y = 0; y <= 5 - wasteHeight && !placed; y++) {
+          for (let x = 0; x <= 4 - wasteWidth && !placed; x++) {
+            // Check if all cells needed for this waste are free
+            let canFit = true;
+            for (let dy = 0; dy < wasteHeight && canFit; dy++) {
+              for (let dx = 0; dx < wasteWidth && canFit; dx++) {
+                if (shift.pitGrid[y + dy][x + dx]) {
+                  canFit = false;
+                }
+              }
+            }
+            
+            if (canFit) {
+              // Mark cells as occupied
+              for (let dy = 0; dy < wasteHeight; dy++) {
+                for (let dx = 0; dx < wasteWidth; dx++) {
+                  shift.pitGrid[y + dy][x + dx] = true;
+                }
+              }
+              pitSlotX = x;
+              pitSlotY = y;
+              placed = true;
+            }
+          }
+        }
+        
+        if (placed) {
+          // Count total occupied spaces
+          const totalOccupied = shift.pitGrid.flat().filter(cell => cell).length;
+          shift.overflow = 100 - (totalOccupied / 20) * 100; // Convert to percentage
+          
+          enemy.pitSlot = pitSlotY * 4 + pitSlotX; // Store as single number for reference
+          enemy.pitGridX = pitSlotX;
+          enemy.pitGridY = pitSlotY;
+          
+          // Position at the center of the occupied area
+          enemy.x = (shift.map.pit.x + pitSlotX + wasteWidth / 2) * shift.cellSize;
+          enemy.y = (shift.map.pit.y + pitSlotY + wasteHeight / 2) * shift.cellSize;
+          
+          console.log(`${enemy.name} (${wasteWidth}x${wasteHeight}) placed in pit at grid (${pitSlotX},${pitSlotY}), overflow now=${shift.overflow.toFixed(1)}%`);
+        } else {
+          // Pit is full, waste overflows
+          shift.overflow = 0;
+          console.log(`Pit full! ${enemy.name} couldn't fit, game over imminent`);
+        }
       }
     }
   });

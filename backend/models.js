@@ -40,7 +40,10 @@ const enemySchema = new mongoose.Schema({
   pathIndex: { type: Number, default: 0 },
   pathId: { type: Number, default: 0 },
   reachedPit: { type: Boolean, default: false },
-  pitSlot: { type: Number, default: -1 }
+  pitSlot: { type: Number, default: -1 },
+  pitGridX: { type: Number, default: -1 },
+  pitGridY: { type: Number, default: -1 },
+  blockedTime: { type: Number, default: 0 }
 }, { strict: false });
 
 const weaponSchema = new mongoose.Schema({
@@ -87,7 +90,10 @@ const shiftSchema = new mongoose.Schema({
   paused: { type: Boolean, default: false },
   boostThreshold: { type: Number, default: 100 },
   boostInterval: { type: Number, default: 100 },
-  freezeEnd: { type: Number, default: 0 }
+  freezeEnd: { type: Number, default: 0 },
+  pitGrid: { type: [[Boolean]], default: null },
+  pitFill: { type: Number, default: 0 },
+  pitMaxFill: { type: Number, default: 20 }
 }, { versionKey: false });
 
 const Shift = mongoose.model('Shift', shiftSchema);
