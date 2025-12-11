@@ -20,10 +20,28 @@ const enemySchema = new mongoose.Schema({
   x: Number,
   y: Number,
   health: Number,
+  hp: Number,
+  maxHP: Number,
   type: String,
+  name: String,
+  rarity: String,
+  rarityColor: Number,
+  material: String,
+  materialWeakTo: [String],
+  materialResistantTo: [String],
+  gridWidth: { type: Number, default: 1 },
+  gridHeight: { type: Number, default: 1 },
+  size: { type: Number, default: 1 },
+  toughness: { type: Number, default: 0 },
+  density: { type: Number, default: 1 },
+  value: { type: Number, default: 1 },
+  specialAbility: String,
+  specialAbilityData: mongoose.Schema.Types.Mixed,
   pathIndex: { type: Number, default: 0 },
-  reachedPit: { type: Boolean, default: false }
-});
+  pathId: { type: Number, default: 0 },
+  reachedPit: { type: Boolean, default: false },
+  pitSlot: { type: Number, default: -1 }
+}, { strict: false });
 
 const weaponSchema = new mongoose.Schema({
   id: String,

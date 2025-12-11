@@ -577,12 +577,12 @@ class GameScene extends Phaser.Scene {
     }
 
     create() {
-        // Fixed world: 800x600 pixels
-        const WORLD_WIDTH = 800;
-        const WORLD_HEIGHT = 600;
+        // Fixed world: 1000x1000 pixels
+        const WORLD_WIDTH = 1000;
+        const WORLD_HEIGHT = 1000;
         this.cellSize = 10;
-        this.gridWidth = 80;
-        this.gridHeight = 60;
+        this.gridWidth = 100;
+        this.gridHeight = 100;
         this.gameScale = 1.0; // Fixed world, no scaling needed
 
         // Set background color
@@ -673,25 +673,30 @@ class GameScene extends Phaser.Scene {
         }
 
         // Pause game function
-        this.pauseGame = (paused) => {
+        this.pauseGame = (paused, fromServer = false) => {
             if (this.paused !== paused) {
+                console.log(`pauseGame called: paused=${paused}, fromServer=${fromServer}, current=${this.paused}`);
                 this.paused = paused;
                 if (paused) {
                     this.scene.pause('GameScene');
+                    console.log('Scene PAUSED');
                 } else {
                     this.scene.resume('GameScene');
+                    console.log('Scene RESUMED');
                 }
-                socket.emit('set-pause', { shiftId: currentShiftId, paused });
+                // Only emit if not triggered by server update (prevent loops)
+                if (!fromServer) {
+                    socket.emit('set-pause', { shiftId: currentShiftId, paused });
+                }
             }
         };
 
-        // Listen for shift updates
-        socket.on('shift-update', (shift) => {
+        // Store listener references for cleanup
+        this.shiftUpdateHandler = (shift) => {
             this.updateFromServer(shift);
-        });
-
-        // Listen for weapon fired
-        socket.on('weapon-fired', (data) => {
+        };
+        
+        this.weaponFiredHandler = (data) => {
             const wpos = this.weaponPositions[data.weaponId];
             const epos = this.enemyPositions[data.targetId];
             if (wpos && epos) {
@@ -708,14 +713,27 @@ class GameScene extends Phaser.Scene {
                     damageText.destroy();
                 });
             }
-        });
-
-        // Listen for boost choice
-        socket.on('boost-choice', (data) => {
+        };
+        
+        this.boostChoiceHandler = (data) => {
             if (data.playerId === currentUser._id) {
                 showBoostModal(data.choices);
             }
-        });
+        };
+
+        // Remove any existing listeners first (prevent duplicates)
+        socket.off('shift-update', this.shiftUpdateHandler);
+        socket.off('weapon-fired', this.weaponFiredHandler);
+        socket.off('boost-choice', this.boostChoiceHandler);
+        
+        // Listen for shift updates
+        socket.on('shift-update', this.shiftUpdateHandler);
+
+        // Listen for weapon fired
+        socket.on('weapon-fired', this.weaponFiredHandler);
+
+        // Listen for boost choice
+        socket.on('boost-choice', this.boostChoiceHandler);
 
         // Weapon placement mode
         // Removed: placingWeapon and selectedWeaponType
@@ -747,6 +765,16 @@ class GameScene extends Phaser.Scene {
     }
 
     update() {
+        // Process pending shift update if available
+        if (this.pendingShiftUpdate) {
+            const now = Date.now();
+            if (now - this.lastShiftUpdate >= 33) {
+                const pending = this.pendingShiftUpdate;
+                this.pendingShiftUpdate = null;
+                this.updateFromServer(pending);
+            }
+        }
+        
         if (this.paused || this.inputsDisabled) return;
         // Handle player movement
         if (this.player) {
@@ -781,9 +809,9 @@ class GameScene extends Phaser.Scene {
             if (dx || dy) {
                 let newX = this.player.x + dx;
                 let newY = this.player.y + dy;
-                // Clamp to world bounds (800x600)
-                newX = Phaser.Math.Clamp(newX, 5, 795);
-                newY = Phaser.Math.Clamp(newY, 5, 595);
+                // Clamp to world bounds (1000x1000)
+                newX = Phaser.Math.Clamp(newX, 5, 995);
+                newY = Phaser.Math.Clamp(newY, 5, 995);
                 
                 // Check collision with weapons only (no path collision)
                 let playerRect = new Phaser.Geom.Rectangle(newX - 5, newY - 5, 10, 10);
@@ -859,12 +887,30 @@ class GameScene extends Phaser.Scene {
 
     updateFromServer(shift) {
         if (!currentUser) return;
+        
+        // Throttle updates to prevent overwhelming Phaser (max 30 updates/sec)
+        const now = Date.now();
+        if (!this.lastShiftUpdate) this.lastShiftUpdate = 0;
+        if (now - this.lastShiftUpdate < 33) {
+            // Store pending update to process later
+            this.pendingShiftUpdate = shift;
+            return;
+        }
+        this.lastShiftUpdate = now;
+        
         window.currentShift = shift;
+        
+        // Handle pause state changes
         if (shift.paused !== this.paused && shift.status !== 'planning') {
-            this.pauseGame(shift.paused);
+            console.log(`Shift pause state changed: server=${shift.paused}, local=${this.paused}`);
+            this.pauseGame(shift.paused, true); // fromServer = true to prevent loop
             // Removed: showPauseModal() call to prevent unwanted pause modals after boost selections
         }
-        if (this.paused) return;
+        
+        // Don't return early if paused - we still need to process updates
+        // The Phaser scene pause will prevent rendering, but data should update
+        // if (this.paused) return; // REMOVED to allow updates while paused
+        
         // Update map if available
         if (shift.map) {
             this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
@@ -1023,21 +1069,110 @@ class GameScene extends Phaser.Scene {
         if (!this.enemySprites) this.enemySprites = {};
         for (let id in this.enemySprites) {
             if (!currentEnemyIds.has(id)) {
-                this.enemySprites[id].destroy();
+                const enemy = this.enemySprites[id];
+                if (enemy.bgRect) enemy.bgRect.destroy();
+                if (enemy.hpBar) enemy.hpBar.destroy();
+                if (enemy.hpBarBg) enemy.hpBarBg.destroy();
+                if (enemy.nameText) enemy.nameText.destroy();
+                if (enemy.abilityGlow) enemy.abilityGlow.destroy();
+                enemy.destroy();
                 delete this.enemySprites[id];
             }
         }
         shift.enemies.forEach(e => {
             if (!this.enemySprites[e.id]) {
+                // Create enemy container based on grid size
+                const spriteWidth = (e.gridWidth || 1) * this.cellSize;
+                const spriteHeight = (e.gridHeight || 1) * this.cellSize;
+                
+                // Create background rectangle with rarity color
+                const bgRect = this.add.rectangle(
+                    e.x * this.gameScale, 
+                    e.y * this.gameScale, 
+                    spriteWidth, 
+                    spriteHeight, 
+                    e.rarityColor || 0xff0000
+                );
+                bgRect.setDepth(5);
+                bgRect.setAlpha(0.8);
+                
+                // Create small sprite in center (30% of total size)
+                const smallSpriteSize = Math.min(spriteWidth, spriteHeight) * 0.3;
                 let enemy = this.add.sprite(e.x * this.gameScale, e.y * this.gameScale, 'waste-01');
-                enemy.setDisplaySize(this.cellSize, this.cellSize);
-                enemy.setTint(0xff0000); // Red tint
-                enemy.setDepth(1); // Enemies above path
+                enemy.setDisplaySize(smallSpriteSize, smallSpriteSize);
+                enemy.setDepth(5.5);
                 if (this.enemies) this.enemies.add(enemy);
+                
+                // Store background reference
+                enemy.bgRect = bgRect;
+                
+                // Add HP bar background
+                enemy.hpBarBg = this.add.rectangle(
+                    e.x * this.gameScale, 
+                    e.y * this.gameScale - spriteHeight/2 - 5, 
+                    spriteWidth, 
+                    3, 
+                    0x000000
+                );
+                enemy.hpBarBg.setDepth(6);
+                
+                // Add HP bar
+                enemy.hpBar = this.add.rectangle(
+                    e.x * this.gameScale, 
+                    e.y * this.gameScale - spriteHeight/2 - 5, 
+                    spriteWidth, 
+                    3, 
+                    0x00FF00
+                );
+                enemy.hpBar.setDepth(7);
+                
+                // Add name text
+                enemy.nameText = this.add.text(
+                    e.x * this.gameScale, 
+                    e.y * this.gameScale + spriteHeight/2 + 5, 
+                    e.name || 'Waste',
+                    {
+                        fontSize: '8px',
+                        color: '#' + (e.rarityColor || 0xFFFFFF).toString(16).padStart(6, '0'),
+                        stroke: '#000000',
+                        strokeThickness: 2
+                    }
+                ).setOrigin(0.5, 0).setDepth(8);
+                
                 this.enemySprites[e.id] = enemy;
             } else {
-                this.enemySprites[e.id].x = e.x * this.gameScale;
-                this.enemySprites[e.id].y = e.y * this.gameScale;
+                const enemy = this.enemySprites[e.id];
+                const spriteWidth = (e.gridWidth || 1) * this.cellSize;
+                const spriteHeight = (e.gridHeight || 1) * this.cellSize;
+                
+                // Update position for both sprite and background
+                enemy.x = e.x * this.gameScale;
+                enemy.y = e.y * this.gameScale;
+                if (enemy.bgRect) {
+                    enemy.bgRect.x = e.x * this.gameScale;
+                    enemy.bgRect.y = e.y * this.gameScale;
+                }
+                
+                // Update HP bar
+                const hpPercent = (e.health || e.hp) / (e.maxHP || e.health || 1);
+                enemy.hpBar.x = e.x * this.gameScale;
+                enemy.hpBar.y = e.y * this.gameScale - spriteHeight/2 - 5;
+                enemy.hpBar.scaleX = hpPercent;
+                enemy.hpBar.setFillStyle(hpPercent > 0.5 ? 0x00FF00 : hpPercent > 0.25 ? 0xFFAA00 : 0xFF0000);
+                enemy.hpBarBg.x = e.x * this.gameScale;
+                enemy.hpBarBg.y = e.y * this.gameScale - spriteHeight/2 - 5;
+                
+                // Update name
+                enemy.nameText.setPosition(e.x * this.gameScale, e.y * this.gameScale + spriteHeight/2 + 5);
+                
+                // Add special ability glow
+                if (e.specialAbility && !enemy.abilityGlow) {
+                    enemy.abilityGlow = this.add.circle(e.x * this.gameScale, e.y * this.gameScale, spriteWidth * 0.6, 0xFFFFFF, 0.3);
+                    enemy.abilityGlow.setDepth(4);
+                }
+                if (enemy.abilityGlow) {
+                    enemy.abilityGlow.setPosition(e.x * this.gameScale, e.y * this.gameScale);
+                }
             }
         });
 
@@ -1204,6 +1339,20 @@ class GameScene extends Phaser.Scene {
                 }
             }
         }
+    }
+
+    shutdown() {
+        // Clean up socket listeners to prevent memory leaks
+        if (this.shiftUpdateHandler) {
+            socket.off('shift-update', this.shiftUpdateHandler);
+        }
+        if (this.weaponFiredHandler) {
+            socket.off('weapon-fired', this.weaponFiredHandler);
+        }
+        if (this.boostChoiceHandler) {
+            socket.off('boost-choice', this.boostChoiceHandler);
+        }
+        console.log('GameScene socket listeners cleaned up');
     }
 
     onPointerMove(pointer) {
@@ -1689,9 +1838,7 @@ function showBoostModal(choices) {
         button.onclick = () => {
             socket.emit('choose-boost', { shiftId: currentShiftId, choiceIndex: index });
             modal.style.display = 'none';
-            if (window.currentShift.players.length === 1) {
-                socket.emit('resume-game', { shiftId: currentShiftId });
-            }
+            // Backend automatically unpauses for single-player, no need to call resume-game
             if (gameInstance && gameInstance.scene) {
                 const scene = gameInstance.scene.getScene('GameScene');
                 if (scene) {

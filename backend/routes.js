@@ -54,7 +54,7 @@ function setupRoutes(app) {
     const shiftId = Date.now().toString();
     const shift = new Shift({
       id: shiftId,
-      players: [{ userId, username: user.username, x: 50, y: 300, inventory: [], boosts: [], scrap: 0, boostChoices: null, lastPlaced: 0, pickupRadius: 50, pickupThreshold: 100, previousPickupThreshold: 0 }],
+      players: [{ userId, username: user.username, x: 500, y: 500, inventory: [], boosts: [], scrap: 0, boostChoices: null, lastPlaced: 0, pickupRadius: 50, pickupThreshold: 100, previousPickupThreshold: 0 }],
       map: generateMap(),
       status: 'waiting'
     });
@@ -71,7 +71,7 @@ function setupRoutes(app) {
     if (shift.players.length >= 4) return res.status(400).json({ error: 'Shift full' });
     const user = await User.findOne({ _id: userId });
     if (!user) return res.status(404).json({ error: 'User not found' });
-    shift.players.push({ userId, username: user.username, x: 50 + shift.players.length * 100, y: 300, inventory: [], boosts: [], scrap: 0, boostChoices: null, lastPlaced: 0, pickupRadius: 50, pickupThreshold: 100, previousPickupThreshold: 0 });
+    shift.players.push({ userId, username: user.username, x: 500 + shift.players.length * 50, y: 500, inventory: [], boosts: [], scrap: 0, boostChoices: null, lastPlaced: 0, pickupRadius: 50, pickupThreshold: 100, previousPickupThreshold: 0 });
     await shift.save();
     res.json({ message: 'Joined' });
   });

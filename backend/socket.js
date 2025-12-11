@@ -156,8 +156,11 @@ function setupSocketHandlers(io) {
       if (!scrap) return;
       const distance = Math.sqrt((player.x - scrap.x) ** 2 + (player.y - scrap.y) ** 2);
       if (distance > player.pickupRadius) return;
-      player.totalScrap += scrap.value;
-      player.scrap += scrap.value;
+      // Calculate scrap value with bonuses
+      const scrapBonus = player.boosts.reduce((sum, b) => sum + (b.effect.scrapBonus || 0), 0);
+      const scrapValue = scrap.value + scrapBonus;
+      player.totalScrap += scrapValue;
+      player.scrap += scrapValue;
       shift.scraps = shift.scraps.filter(s => s.id !== scrapId);
       // Check for boost threshold
       if (player.scrap >= player.pickupThreshold) {
