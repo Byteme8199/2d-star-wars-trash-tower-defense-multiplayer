@@ -146,7 +146,7 @@ const shiftSchema = new mongoose.Schema({
   worldHeight: Number,
   gridWidth: Number,
   gridHeight: Number,
-  cellSize: { type: Number, default: 10 },
+  cellSize: { type: Number, default: 20 },
   phase: { type: Number, default: 1 },
   phaseStartTime: { type: Number, default: 0 },
   waveInPhase: { type: Number, default: 1 },
@@ -497,12 +497,12 @@ app.post('/create-shift', async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(400).json({ message: 'User not found' });
     const shiftId = 'shift-' + Date.now();
-    // Fixed world: 1000x1000 pixels = 100x100 grid cells
+    // Fixed world: 1000x1000 pixels = 50x50 grid cells (20px per cell)
     const worldWidth = 1000;
     const worldHeight = 1000;
-    const gridWidth = 100;
-    const gridHeight = 100;
-    const cellSize = 10;
+    const gridWidth = 50;
+    const gridHeight = 50;
+    const cellSize = 20;
     const shift = new Shift({ 
       id: shiftId, 
       players: [{ userId, username: user.username, x: 500, y: 500 }], 
@@ -515,7 +515,7 @@ app.post('/create-shift', async (req, res) => {
       overflow: 20,
       pitMaxFill: 20
     });
-    console.log('Generating map for 100x100 grid...');
+    console.log('Generating map for 50x50 grid (20px cells)...');
     const map = generateMap(gridWidth, gridHeight);
     console.log('Generated map pit:', map.pit, 'entries:', map.entries.length, 'path length:', map.pathSquares.length, 'last square:', map.pathSquares[map.pathSquares.length - 1]);
     console.log('Map generated, saving shift...');
@@ -776,8 +776,25 @@ io.on('connection', (socket) => {
           }
         });
       } else if (chosen.type === 'waste-destroy') {
-        // Destroy all enemies
+        // Destroy all enemies and drop scrap
         isInstantBoost = true;
+        // Calculate scrap multiplier from player's boosts
+        let scrapGain = 1;
+        if (player && player.boosts) {
+          player.boosts.forEach(boost => {
+            if (boost.effect.scrapMult) scrapGain = Math.floor(scrapGain * boost.effect.scrapMult);
+          });
+        }
+        // Generate scrap for each destroyed enemy
+        shift.enemies.forEach(enemy => {
+          shift.scraps.push({ 
+            id: Date.now().toString() + Math.random(), 
+            x: Math.max(0, Math.min(shift.worldWidth, enemy.x + (Math.random() - 0.5) * 20)), 
+            y: Math.max(0, Math.min(shift.worldHeight, enemy.y + (Math.random() - 0.5) * 20)), 
+            value: scrapGain 
+          });
+          shift.enemiesDefeated += 1;
+        });
         shift.enemies = [];
       } else if (chosen.type === 'enemy-freeze') {
         // Freeze enemies for 5 seconds
@@ -1171,111 +1188,37 @@ async function gameLoop(shiftId) {
       const myGridX = Math.floor(enemy.x / shift.cellSize);
       const myGridY = Math.floor(enemy.y / shift.cellSize);
       
+      // Check if next square is significantly blocked (allow some overlap)
       const isBlocked = shift.enemies.some(otherEnemy => {
         if (otherEnemy.id === enemy.id) return false; // Don't check self
         if (otherEnemy.reachedPit) return false; // Ignore waste in pit
         
-        // Check if other waste is on or near the next square(s) we need
-        const otherGridX = Math.floor(otherEnemy.x / shift.cellSize);
-        const otherGridY = Math.floor(otherEnemy.y / shift.cellSize);
-        const otherSize = otherEnemy.gridWidth || 1;
+        // Use actual distance check instead of grid-based - more forgiving
+        const dx = otherEnemy.x - targetX;
+        const dy = otherEnemy.y - targetY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
         
-        // For multi-cell waste, check if we need space for our full size at the next position
-        for (let myDx = 0; myDx < mySize; myDx++) {
-          for (let myDy = 0; myDy < mySize; myDy++) {
-            const neededX = nextSquare.x + myDx;
-            const neededY = nextSquare.y + myDy;
-            
-            // Check if other waste occupies this needed cell
-            for (let otherDx = 0; otherDx < otherSize; otherDx++) {
-              for (let otherDy = 0; otherDy < otherSize; otherDy++) {
-                if (otherGridX + otherDx === neededX && otherGridY + otherDy === neededY) {
-                  return true;
-                }
-              }
-            }
-          }
-        }
-        return false;
+        // Only consider blocked if centers are very close (within half a cell)
+        // This allows waste to squeeze past each other
+        const minDistance = shift.cellSize * 0.4;
+        return distance < minDistance;
       });
       
       let dx = targetX - enemy.x;
       let dy = targetY - enemy.y;
       let dist = Math.sqrt(dx * dx + dy * dy);
       
-      if (dist < 0.5 && !isBlocked) {
-        // Only advance pathIndex if we're close AND not blocked
+      // Always move toward target - ignore blocking entirely for smoother flow
+      if (dist > 0) {
+        const moveAmount = Math.min(speed, dist);
+        enemy.x += (dx / dist) * moveAmount;
+        enemy.y += (dy / dist) * moveAmount;
+      }
+      
+      // Advance pathIndex when close enough
+      if (dist < 1.0) {
         enemy.pathIndex = nextIndex;
-      } else if (!isBlocked) {
-        // Only move toward next square if not blocked
-        enemy.x += (dx / dist) * speed;
-        enemy.y += (dy / dist) * speed;
-      } else {
-        // If blocked, track how long we've been stuck
-        if (!enemy.blockedTime) {
-          enemy.blockedTime = 0;
-        }
-        enemy.blockedTime += 0.1; // 100ms per tick
-        
-        // If stuck for more than 2 seconds, resolve deadlock
-        if (enemy.blockedTime > 2) {
-          // Find the blocking waste
-          const blockingWaste = shift.enemies.find(otherEnemy => {
-            if (otherEnemy.id === enemy.id) return false;
-            if (otherEnemy.reachedPit) return false;
-            
-            const otherGridX = Math.floor(otherEnemy.x / shift.cellSize);
-            const otherGridY = Math.floor(otherEnemy.y / shift.cellSize);
-            const otherSize = otherEnemy.gridWidth || 1;
-            
-            for (let myDx = 0; myDx < mySize; myDx++) {
-              for (let myDy = 0; myDy < mySize; myDy++) {
-                const neededX = nextSquare.x + myDx;
-                const neededY = nextSquare.y + myDy;
-                
-                for (let otherDx = 0; otherDx < otherSize; otherDx++) {
-                  for (let otherDy = 0; otherDy < otherSize; otherDy++) {
-                    if (otherGridX + otherDx === neededX && otherGridY + otherDy === neededY) {
-                      return true;
-                    }
-                  }
-                }
-              }
-            }
-            return false;
-          });
-          
-          // 50/50 chance to let this waste or the blocking waste continue
-          if (Math.random() < 0.5) {
-            // This waste wins - teleport slightly forward to break deadlock
-            enemy.pathIndex = nextIndex;
-            enemy.x = targetX;
-            enemy.y = targetY;
-            enemy.blockedTime = 0;
-            console.log(`Deadlock broken: ${enemy.name} pushed through`);
-          } else if (blockingWaste) {
-            // Other waste wins - let it advance
-            blockingWaste.pathIndex++;
-            if (blockingWaste.pathIndex < path.length) {
-              const blockingNextSquare = path[blockingWaste.pathIndex];
-              blockingWaste.x = blockingNextSquare.x * shift.cellSize + shift.cellSize / 2;
-              blockingWaste.y = blockingNextSquare.y * shift.cellSize + shift.cellSize / 2;
-            }
-            blockingWaste.blockedTime = 0;
-            console.log(`Deadlock broken: ${blockingWaste.name} pushed through`);
-          }
-        }
-        
-        // Snap to current path position to prevent drifting off-path
-        const currentSquare = path[enemy.pathIndex];
-        const currentTargetX = currentSquare.x * shift.cellSize + shift.cellSize / 2;
-        const currentTargetY = currentSquare.y * shift.cellSize + shift.cellSize / 2;
-        const driftDist = Math.sqrt((enemy.x - currentTargetX)**2 + (enemy.y - currentTargetY)**2);
-        
-        if (driftDist > shift.cellSize / 4) {
-          enemy.x = currentTargetX;
-          enemy.y = currentTargetY;
-        }
+        enemy.blockedTime = 0;
       }
     } else {
       // reached end, move to pit
@@ -1380,9 +1323,23 @@ async function gameLoop(shiftId) {
               speed: 1,
               damage: Math.floor(effectiveStats.power / 3),
               playerId: weapon.playerId,
-              knockback: effectiveStats.knockback
+              knockback: effectiveStats.knockback,
+              weaponType: weapon.type
             });
           }
+        } else if (weapon.type === 'pressure-washer') {
+          // Create water projectile for visual effect
+          shift.projectiles.push({
+            id: Date.now().toString() + Math.random(),
+            x: weapon.x,
+            y: weapon.y,
+            targetId: nearest.id,
+            speed: 3,
+            damage: effectiveStats.power,
+            playerId: weapon.playerId,
+            knockback: effectiveStats.knockback,
+            weaponType: weapon.type
+          });
         } else {
           // Instant damage
           nearest.health -= effectiveStats.power;
@@ -1680,6 +1637,13 @@ function generateMap(gridWidth, gridHeight, depth = 0) {
   let successfulMainPaths = 0;
   
   // Generate 3 main paths, each with 0-2 branches
+  // Define distinct colors for main paths
+  const mainPathColors = [
+    { r: 85, g: 0, b: 0 },    // Path 1: Dark red
+    { r: 0, g: 51, b: 51 },   // Path 2: Dark teal
+    { r: 53, g: 79, b: 0 }    // Path 3: Dark olive
+  ];
+  
   const mainPathIndices = [0, 1, 2]; // Use top, right, bottom
   for (let i = 0; i < mainPathIndices.length; i++) {
     const mainPathIndex = mainPathIndices[i];
@@ -1700,8 +1664,11 @@ function generateMap(gridWidth, gridHeight, depth = 0) {
       entries.push(spawnPoint);
       entryToMainPath.push(successfulMainPaths); // Track which main path this entry belongs to
       
-      const pathColor = `0x${Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, '0')}`;
-      corePaths.push({squares: reversedMainPath, color: pathColor, id: pathIdCounter++});
+      // Use main path color
+      const baseColor = mainPathColors[i % mainPathColors.length];
+      const pathColor = `0x${((baseColor.r << 16) | (baseColor.g << 8) | baseColor.b).toString(16).padStart(6, '0')}`;
+      const mainPathIndex = corePaths.length; // Store index before pushing
+      corePaths.push({squares: reversedMainPath, color: pathColor, id: pathIdCounter++, parentPath: mainPathIndex, isMainPath: true});
       reversedMainPath.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
       successfulMainPaths++;
       
@@ -1731,7 +1698,23 @@ function generateMap(gridWidth, gridHeight, depth = 0) {
           const mainPathFromJunction = reversedMainPath.slice(reversedMainPath.length - branchIndex);
           const mergedPath = [...reversedBranch, ...mainPathFromJunction];
           
-          corePaths.push({squares: mergedPath, color: pathColor, id: pathIdCounter++});
+          // Darken the parent color: 25% for 1st branch, 45% for 2nd, 65% for 3rd, etc.
+          const darkenPercent = 0.25 + (b * 0.20); // 0.25, 0.45, 0.65, 0.85...
+          const darkenedColor = {
+            r: Math.floor(baseColor.r * (1 - darkenPercent)),
+            g: Math.floor(baseColor.g * (1 - darkenPercent)),
+            b: Math.floor(baseColor.b * (1 - darkenPercent))
+          };
+          const branchPathColor = `0x${((darkenedColor.r << 16) | (darkenedColor.g << 8) | darkenedColor.b).toString(16).padStart(6, '0')}`;
+          
+          corePaths.push({
+            squares: mergedPath, 
+            color: branchPathColor, 
+            id: pathIdCounter++,
+            parentPath: mainPathIndex, // Reference to parent main path
+            branchMergeIndex: reversedBranch.length, // Where branch ends and merged section begins
+            isMainPath: false
+          });
           reversedBranch.forEach(sq => allCoreSquares.add(`${sq.x},${sq.y}`));
           console.log(`  Branch ${b}: branch length=${branchPath.length}, merged total=${mergedPath.length}, endpoint=(${branchSpawnPoint.x},${branchSpawnPoint.y})`);
         } else {
@@ -1870,9 +1853,10 @@ function generateBranchPath(start, pit, gridWidth, gridHeight, existingPathSquar
     }
     
     if (nextDir === -1) {
+      const oppositeDir = currentDir >= 0 ? (currentDir + 2) % 4 : -1;
       const validDirs = dirs
         .map((d, i) => ({dir: i, x: current.x + d[0], y: current.y + d[1]}))
-        .filter(d => isValid(d.x, d.y));
+        .filter(d => d.dir !== oppositeDir && isValid(d.x, d.y)); // Exclude 180-degree turns
       
       if (validDirs.length === 0) {
         return path.length >= 20 ? path : null;
@@ -1994,11 +1978,12 @@ function generateOutwardPath(start, pit, gridWidth, gridHeight, existingPathSqua
     }
     // 15% - Random valid direction (creates loops and wild paths)
     
-    // If no direction chosen, pick any valid direction
+    // If no direction chosen, pick any valid direction (but never 180-degree turn)
     if (nextDir === -1) {
+      const oppositeDir = currentDir >= 0 ? (currentDir + 2) % 4 : -1;
       const validDirs = dirs
         .map((d, i) => ({dir: i, x: current.x + d[0], y: current.y + d[1]}))
-        .filter(d => isValid(d.x, d.y));
+        .filter(d => d.dir !== oppositeDir && isValid(d.x, d.y)); // Exclude opposite direction
       
       if (validDirs.length === 0) {
         // Dead end - return what we have

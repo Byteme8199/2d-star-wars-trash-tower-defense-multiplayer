@@ -329,7 +329,8 @@ function handleWasteDeath(waste, shift) {
  */
 function applyRegeneration(waste, deltaTime) {
   if (waste.specialAbility === 'Regenerating') {
-    waste.hp = Math.min(waste.maxHP, waste.hp + (waste.maxHP * 0.05 * deltaTime));
+    // Regenerate 2% of max HP per second (0.2% per 0.1s)
+    waste.hp = Math.min(waste.maxHP, waste.hp + (waste.maxHP * 0.002 * deltaTime));
     waste.health = waste.hp;
   }
 }

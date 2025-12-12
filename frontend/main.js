@@ -552,6 +552,10 @@ function startGame() {
       arcade: {
         debug: false
       }
+    },
+    render: {
+      pixelArt: true, // Crisp pixel rendering
+      antialias: false
     }
   };
   gameInstance = new Phaser.Game(config);
@@ -570,20 +574,31 @@ class GameScene extends Phaser.Scene {
 
     preload() {
         // Load assets here (e.g., this.load.image('tower', 'assets/tower.png');)
-        this.load.spritesheet('conveyor-belt', 'assets/conveyor-belt.png', { frameWidth: 10, frameHeight: 10 });
+        this.load.spritesheet('conveyor-belt', 'assets/conveyor-belt.png', { frameWidth: 20, frameHeight: 20 });
         this.load.image('scrap', 'assets/scrap.png');
         this.load.image('waste-01', 'assets/waste-01.png');
         this.load.image('pressure-washer', 'assets/pressure-washer.png');
+        
+        // Create particle texture dynamically
+        const graphics = this.make.graphics({ x: 0, y: 0, add: false });
+        graphics.fillStyle(0xffffff, 1);
+        graphics.fillCircle(4, 4, 4);
+        graphics.generateTexture('particle', 8, 8);
+        graphics.destroy();
     }
 
     create() {
-        // Fixed world: 1000x1000 pixels
+        // Fixed world: 1000x1000 pixels = 50x50 grid (20px cells)
         const WORLD_WIDTH = 1000;
         const WORLD_HEIGHT = 1000;
-        this.cellSize = 10;
-        this.gridWidth = 100;
-        this.gridHeight = 100;
+        this.cellSize = 20;
+        this.gridWidth = 50;
+        this.gridHeight = 50;
         this.gameScale = 1.0; // Fixed world, no scaling needed
+        
+        // Conveyor animation
+        this.conveyorOffset = 0;
+        this.conveyorSpeed = 0.5;
 
         // Set background color
         this.cameras.main.setBackgroundColor('#000011');
@@ -622,8 +637,11 @@ class GameScene extends Phaser.Scene {
         this.collectingScraps = this.add.group();
 
         // Groups and graphics
-        this.pathSprites = this.add.group();
+        this.barrierGraphics = this.add.graphics();
+        this.barrierGraphics.setDepth(-3); // Lowest - barrier lines
+        this.pathGraphicsArray = []; // Array of graphics objects, one per path with different depths
         this.pitGraphics = this.add.graphics();
+        this.pitGraphics.setDepth(-2);
         this.scraps = this.add.group();
         this.playerSprites = {};
         this.enemySprites = {};
@@ -632,6 +650,9 @@ class GameScene extends Phaser.Scene {
         this.weapons = this.add.group();
         this.enemies = this.add.group();
         this.projectiles = this.add.group();
+        
+        // Path squares tracking
+        this.currentShift = null;
 
         // UI texts - fixed to camera (not world)
         this.heatText = this.add.text(10, 10, 'Heat: 0', { fontSize: '16px', fill: '#fff', fontFamily: 'Arial' });
@@ -764,6 +785,269 @@ class GameScene extends Phaser.Scene {
         });
     }
 
+    drawConveyorPaths() {
+        if (!this.currentShift?.map?.corePaths) return;
+        
+        // Clear existing path graphics
+        this.pathGraphicsArray.forEach(g => g.destroy());
+        this.pathGraphicsArray = [];
+        this.barrierGraphics.clear();
+        
+        // Build a map of all squares occupied by all paths to detect intersections
+        const squarePathsMap = new Map(); // key: "x,y", value: array of pathData objects
+        this.currentShift.map.corePaths.forEach(pathData => {
+            pathData.squares.forEach(sq => {
+                const key = `${sq.x},${sq.y}`;
+                if (!squarePathsMap.has(key)) {
+                    squarePathsMap.set(key, []);
+                }
+                squarePathsMap.get(key).push(pathData);
+            });
+        });
+        
+        this.currentShift.map.corePaths.forEach((pathData, pathIndex) => {
+            const isActive = this.currentShift.activeEntries?.some(entryIdx => {
+                const entry = this.currentShift.map.entries[entryIdx];
+                return entry && pathData.squares.some(sq => sq.x === entry.x && sq.y === entry.y);
+            });
+            
+            const baseColor = parseInt(pathData.color);
+            const alpha = isActive ? 1.0 : 0.3;
+            
+            // Determine the base z-index for this path
+            let basePathIndex;
+            if (pathData.isMainPath) {
+                // Main paths use their own index
+                basePathIndex = pathIndex;
+            } else if (pathData.parentPath !== undefined) {
+                // Branches use their parent's index
+                basePathIndex = pathData.parentPath;
+            } else {
+                // Fallback for old data without metadata
+                basePathIndex = pathIndex;
+            }
+            
+            // Create graphics objects for each segment (one per square)
+            const segmentGraphics = [];
+            pathData.squares.forEach((sq, idx) => {
+                // Calculate depth: base path index - fraction based on position in sequence
+                // Earlier segments (closer to entry) have HIGHER z-index (render on top)
+                // Later segments (closer to pit) have LOWER z-index (render below)
+                // This simulates waste traveling "downward" into the pit
+                
+                // For branches, adjust the depth calculation at the merge point
+                let effectiveIndex = idx;
+                let effectivePathLength = pathData.squares.length;
+                if (!pathData.isMainPath && pathData.branchMergeIndex !== undefined && idx >= pathData.branchMergeIndex) {
+                    // After merge point, calculate depth as if we're on the parent path
+                    // The merged section starts where the branch joined the parent
+                    const parentPath = this.currentShift.map.corePaths[pathData.parentPath];
+                    if (parentPath) {
+                        const segmentsFromMerge = idx - pathData.branchMergeIndex;
+                        const parentMergePoint = parentPath.squares.length - (pathData.squares.length - pathData.branchMergeIndex);
+                        effectiveIndex = parentMergePoint + segmentsFromMerge;
+                        effectivePathLength = parentPath.squares.length; // Use parent length for proper scaling
+                    }
+                }
+                
+                const segmentDepth = basePathIndex - (effectiveIndex / (effectivePathLength * 2));
+                
+                // Create a graphics object for this specific path segment
+                const pathGraphics = this.add.graphics();
+                pathGraphics.setDepth(segmentDepth - 0.5); // Offset so waste renders above
+                this.pathGraphicsArray.push(pathGraphics);
+                segmentGraphics.push(pathGraphics);
+            });
+            
+            // First pass - draw all base tiles and side barriers
+            pathData.squares.forEach((sq, idx) => {
+                const x = sq.x * this.cellSize;
+                const y = sq.y * this.cellSize;
+                const pathGraphics = segmentGraphics[idx];
+                
+                // Draw base tile
+                pathGraphics.fillStyle(baseColor, alpha);
+                pathGraphics.fillRect(x, y, this.cellSize, this.cellSize);
+                
+                // Determine which sides should have barriers based on connected neighbors
+                const prevSq = idx > 0 ? pathData.squares[idx - 1] : null;
+                const nextSq = idx < pathData.squares.length - 1 ? pathData.squares[idx + 1] : null;
+                
+                // Check if adjacent squares are part of ANY path (for intersections)
+                const topKey = `${sq.x},${sq.y - 1}`;
+                const bottomKey = `${sq.x},${sq.y + 1}`;
+                const leftKey = `${sq.x - 1},${sq.y}`;
+                const rightKey = `${sq.x + 1},${sq.y}`;
+                
+                // Track which sides are connected (no barrier needed)
+                // Connected if it's the prev/next in THIS path OR if any other path occupies that square
+                const connectedTop = (prevSq && prevSq.x === sq.x && prevSq.y === sq.y - 1) || 
+                                     (nextSq && nextSq.x === sq.x && nextSq.y === sq.y - 1) ||
+                                     squarePathsMap.has(topKey);
+                const connectedBottom = (prevSq && prevSq.x === sq.x && prevSq.y === sq.y + 1) || 
+                                        (nextSq && nextSq.x === sq.x && nextSq.y === sq.y + 1) ||
+                                        squarePathsMap.has(bottomKey);
+                const connectedLeft = (prevSq && prevSq.x === sq.x - 1 && prevSq.y === sq.y) || 
+                                      (nextSq && nextSq.x === sq.x - 1 && nextSq.y === sq.y) ||
+                                      squarePathsMap.has(leftKey);
+                const connectedRight = (prevSq && prevSq.x === sq.x + 1 && prevSq.y === sq.y) || 
+                                       (nextSq && nextSq.x === sq.x + 1 && nextSq.y === sq.y) ||
+                                       squarePathsMap.has(rightKey);
+                
+                // Draw barriers on sides that are NOT connected to prev/next path squares
+                this.barrierGraphics.lineStyle(3, 0x000000, 0.1);
+                
+                if (!connectedTop) {
+                    this.barrierGraphics.lineBetween(x, y, x + this.cellSize, y); // Top
+                }
+                if (!connectedBottom) {
+                    this.barrierGraphics.lineBetween(x, y + this.cellSize, x + this.cellSize, y + this.cellSize); // Bottom
+                }
+                if (!connectedLeft) {
+                    this.barrierGraphics.lineBetween(x, y, x, y + this.cellSize); // Left
+                }
+                if (!connectedRight) {
+                    this.barrierGraphics.lineBetween(x + this.cellSize, y, x + this.cellSize, y + this.cellSize); // Right
+                }
+            });
+            
+            // Second pass - draw all arrows on top
+            pathData.squares.forEach((sq, idx) => {
+                const x = sq.x * this.cellSize;
+                const y = sq.y * this.cellSize;
+                const pathGraphics = segmentGraphics[idx];
+                
+                // Determine path direction for barriers and glow
+                let isHorizontal = false;
+                let isVertical = false;
+                
+                if (idx < pathData.squares.length - 1) {
+                    const nextSq = pathData.squares[idx + 1];
+                    const dx = Math.abs(nextSq.x - sq.x);
+                    const dy = Math.abs(nextSq.y - sq.y);
+                    isHorizontal = dx > 0;
+                    isVertical = dy > 0;
+                } else if (idx > 0) {
+                    const prevSq = pathData.squares[idx - 1];
+                    const dx = Math.abs(sq.x - prevSq.x);
+                    const dy = Math.abs(sq.y - prevSq.y);
+                    isHorizontal = dx > 0;
+                    isVertical = dy > 0;
+                }
+                
+                // Calculate direction to next square for arrow orientation
+                let arrowAngle = Math.PI; // Default pointing down
+                if (idx < pathData.squares.length - 1) {
+                    const nextSq = pathData.squares[idx + 1];
+                    const dx = nextSq.x - sq.x;
+                    const dy = nextSq.y - sq.y;
+                    
+                    // Calculate angle based on direction (flip 180 degrees)
+                    if (dx > 0) arrowAngle = -Math.PI / 2; // Right
+                    else if (dx < 0) arrowAngle = Math.PI / 2; // Left
+                    else if (dy > 0) arrowAngle = 0; // Down
+                    else if (dy < 0) arrowAngle = Math.PI; // Up
+                } else if (this.currentShift?.map?.pit) {
+                    // Last square - point towards pit center
+                    const pit = this.currentShift.map.pit;
+                    const pitCenterX = pit.x + pit.width / 2;
+                    const pitCenterY = pit.y + pit.height / 2;
+                    const dx = pitCenterX - sq.x;
+                    const dy = pitCenterY - sq.y;
+                    
+                    // Calculate angle based on direction to pit
+                    if (Math.abs(dx) > Math.abs(dy)) {
+                        arrowAngle = dx > 0 ? -Math.PI / 2 : Math.PI / 2; // Right or Left
+                    } else {
+                        arrowAngle = dy > 0 ? 0 : Math.PI; // Down or Up
+                    }
+                }
+                
+                // Calculate center of cell for rotation
+                const centerX = x + this.cellSize / 2;
+                const centerY = y + this.cellSize / 2;
+                
+                // Draw 3 runway-style chevron arrows with pulsing opacity
+                const numArrows = 3;
+                const arrowSpacing = this.cellSize / (numArrows + 1);
+                const arrowWidth = this.cellSize * 0.5;
+                const arrowHeight = this.cellSize * 0.15;
+                
+                // Calculate which arrow should be "lit" based on animation phase
+                const animPhase = (this.conveyorOffset / this.cellSize + idx * 0.3) % 1;
+                
+                for (let i = 0; i < numArrows; i++) {
+                    // Calculate opacity based on which arrow in sequence should be lit (more subtle)
+                    const arrowPhase = i / numArrows;
+                    const phaseDiff = Math.abs(animPhase - arrowPhase);
+                    const opacity = phaseDiff < .5 ? 0.1 : 0.05; // 70% when active, 10% when dim
+                    
+                    // Offset along the direction of travel
+                    const offset = (i + 1) * arrowSpacing - this.cellSize / 2;
+                    
+                    // Chevron arrow points (shallow V shape)
+                    const arrowPoints = [
+                        { x: -arrowWidth / 2, y: offset - arrowHeight / 2 },
+                        { x: 0, y: offset + arrowHeight / 2 },
+                        { x: arrowWidth / 2, y: offset - arrowHeight / 2 }
+                    ];
+                    
+                    // Rotate and draw chevron
+                    pathGraphics.lineStyle(2, 0xFFFFFF, opacity);
+                    pathGraphics.beginPath();
+                    arrowPoints.forEach((point, j) => {
+                        const rotatedX = point.x * Math.cos(arrowAngle) - point.y * Math.sin(arrowAngle);
+                        const rotatedY = point.x * Math.sin(arrowAngle) + point.y * Math.cos(arrowAngle);
+                        if (j === 0) {
+                            pathGraphics.moveTo(centerX + rotatedX, centerY + rotatedY);
+                        } else {
+                            pathGraphics.lineTo(centerX + rotatedX, centerY + rotatedY);
+                        }
+                    });
+                    pathGraphics.strokePath();
+                }
+                
+                // Glow effect for active paths on barrier walls only (slower pulse, more transparent)
+                if (isActive) {
+                    const glowAlpha = 0.15 + Math.sin(Date.now() / 800) * 0.1; // Slower and more subtle
+                    pathGraphics.lineStyle(2, 0xFFFF00, glowAlpha);
+                    
+                    // Determine which sides should have glow based on connected neighbors
+                    const prevSq = idx > 0 ? pathData.squares[idx - 1] : null;
+                    const nextSq = idx < pathData.squares.length - 1 ? pathData.squares[idx + 1] : null;
+                    
+                    const connectedTop = (prevSq && prevSq.x === sq.x && prevSq.y === sq.y - 1) || 
+                                         (nextSq && nextSq.x === sq.x && nextSq.y === sq.y - 1);
+                    const connectedBottom = (prevSq && prevSq.x === sq.x && prevSq.y === sq.y + 1) || 
+                                            (nextSq && nextSq.x === sq.x && nextSq.y === sq.y + 1);
+                    const connectedLeft = (prevSq && prevSq.x === sq.x - 1 && prevSq.y === sq.y) || 
+                                          (nextSq && nextSq.x === sq.x - 1 && nextSq.y === sq.y);
+                    const connectedRight = (prevSq && prevSq.x === sq.x + 1 && prevSq.y === sq.y) || 
+                                           (nextSq && nextSq.x === sq.x + 1 && nextSq.y === sq.y);
+                    
+                    // Draw glow on sides that are NOT connected (where barriers are)
+                    if (!connectedTop) {
+                        pathGraphics.lineBetween(x + 1, y + 1, x + this.cellSize - 1, y + 1); // Top
+                    }
+                    if (!connectedBottom) {
+                        pathGraphics.lineBetween(x + 1, y + this.cellSize - 1, x + this.cellSize - 1, y + this.cellSize - 1); // Bottom
+                    }
+                    if (!connectedLeft) {
+                        pathGraphics.lineBetween(x + 1, y + 1, x + 1, y + this.cellSize - 1); // Left
+                    }
+                    if (!connectedRight) {
+                        pathGraphics.lineBetween(x + this.cellSize - 1, y + 1, x + this.cellSize - 1, y + this.cellSize - 1); // Right
+                    }
+                }
+            });
+        });
+        
+        // Update pathSquares set for collision detection
+        if (this.currentShift.map.pathSquares) {
+            this.pathSquares = new Set(this.currentShift.map.pathSquares.map(s => `${s.x},${s.y}`));
+        }
+    }
+
     update() {
         // Process pending shift update if available
         if (this.pendingShiftUpdate) {
@@ -773,6 +1057,15 @@ class GameScene extends Phaser.Scene {
                 this.pendingShiftUpdate = null;
                 this.updateFromServer(pending);
             }
+        }
+        
+        // Animate conveyor belts (even when paused for visual effect)
+        if (window.currentShift && window.currentShift.map) {
+            this.conveyorOffset += this.conveyorSpeed;
+            if (this.conveyorOffset >= this.cellSize) {
+                this.conveyorOffset -= this.cellSize;
+            }
+            this.drawConveyorPaths();
         }
         
         if (this.paused || this.inputsDisabled) return;
@@ -898,130 +1191,71 @@ class GameScene extends Phaser.Scene {
         }
         this.lastShiftUpdate = now;
         
+        this.currentShift = shift;
         window.currentShift = shift;
         
         // Handle pause state changes
         if (shift.paused !== this.paused && shift.status !== 'planning') {
             console.log(`Shift pause state changed: server=${shift.paused}, local=${this.paused}`);
             this.pauseGame(shift.paused, true); // fromServer = true to prevent loop
-            // Removed: showPauseModal() call to prevent unwanted pause modals after boost selections
         }
         
-        // Don't return early if paused - we still need to process updates
-        // The Phaser scene pause will prevent rendering, but data should update
-        // if (this.paused) return; // REMOVED to allow updates while paused
-        
-        // Update map if available
-        if (shift.map) {
-            this.pathSquares = new Set(shift.map.pathSquares.map(s => `${s.x},${s.y}`));
-            if (!this.pathDrawn) {
-                // Build map of square to path index for coloring
-                const squareToPath = new Map();
-                shift.map.corePaths.forEach((pathData, index) => {
-                    pathData.squares.forEach(sq => {
-                        const key = `${sq.x},${sq.y}`;
-                        if (!squareToPath.has(key)) {
-                            squareToPath.set(key, {pathIndex: index, color: pathData.color});
+        // Draw conveyor paths with vector graphics (animated in update loop)
+        this.drawConveyorPaths();
+
+        // Draw pit with grid
+        if (this.pitGraphics && shift.map.pit) {
+            this.pitGraphics.clear();
+            
+            const pitWidth = 4;
+            const pitHeight = 5;
+            const pitStartX = shift.map.pit.x * this.cellSize;
+            const pitStartY = shift.map.pit.y * this.cellSize;
+            
+            // Draw pit background
+            this.pitGraphics.fillStyle(0x4444AA, 0.6);
+            this.pitGraphics.fillRect(
+                pitStartX,
+                pitStartY,
+                pitWidth * this.cellSize,
+                pitHeight * this.cellSize
+            );
+            
+            // Draw grid lines
+            this.pitGraphics.lineStyle(1, 0x8888FF, 0.5);
+            for (let x = 0; x <= pitWidth; x++) {
+                this.pitGraphics.lineBetween(
+                    pitStartX + x * this.cellSize,
+                    pitStartY,
+                    pitStartX + x * this.cellSize,
+                    pitStartY + pitHeight * this.cellSize
+                );
+            }
+            for (let y = 0; y <= pitHeight; y++) {
+                this.pitGraphics.lineBetween(
+                    pitStartX,
+                    pitStartY + y * this.cellSize,
+                    pitStartX + pitWidth * this.cellSize,
+                    pitStartY + y * this.cellSize
+                );
+            }
+            
+            // Draw occupied cells from pitGrid
+            if (shift.pitGrid) {
+                shift.pitGrid.forEach((row, gy) => {
+                    row.forEach((occupied, gx) => {
+                        if (occupied) {
+                            this.pitGraphics.fillStyle(0xFF0000, 0.7);
+                            this.pitGraphics.fillRect(
+                                pitStartX + gx * this.cellSize + 2,
+                                pitStartY + gy * this.cellSize + 2,
+                                this.cellSize - 4,
+                                this.cellSize - 4
+                            );
                         }
                     });
                 });
-                
-                shift.map.pathSquares.forEach((square) => {
-                    const key = `${square.x},${square.y}`;
-                    let frame = 0; // Simplify, set all to 0
-                    const sprite = this.add.sprite(square.x * this.cellSize + this.cellSize / 2, square.y * this.cellSize + this.cellSize / 2, 'conveyor-belt');
-                    sprite.setFrame(frame);
-                    sprite.setScale(this.gameScale);
-                    
-                    // Apply path-specific tint
-                    const pathInfo = squareToPath.get(key);
-                    if (pathInfo && pathInfo.color) {
-                        // Parse color string properly
-                        const colorValue = typeof pathInfo.color === 'string' ? 
-                            parseInt(pathInfo.color.replace('0x', ''), 16) : 
-                            pathInfo.color;
-                        sprite.setTint(colorValue);
-                        sprite.setAlpha(0.9);
-                    } else {
-                        // Default gray if no path info
-                        sprite.setTint(0x808080);
-                        sprite.setAlpha(0.8);
-                    }
-                    
-                    if (this.anims.exists('conveyor-move')) {
-                        sprite.play('conveyor-move');
-                    }
-                    sprite.setDepth(0);
-                    if (this.pathSprites) {
-                        this.pathSprites.add(sprite);
-                    }
-                    if (!this.pathSpriteMap) this.pathSpriteMap = {};
-                    this.pathSpriteMap[key] = {sprite: sprite, pathInfo: pathInfo};
-                });
-                this.pathDrawn = true;
             }
-            // Update glow for active spawning paths
-            if (shift.activeEntries && shift.activeEntries.length > 0) {
-                const activeSet = new Set();
-                shift.map.corePaths.forEach((pathData, index) => {
-                    if (shift.activeEntries.includes(index)) {
-                        pathData.squares.forEach(sq => activeSet.add(`${sq.x},${sq.y}`));
-                    }
-                });
-                
-                for (const key in this.pathSpriteMap) {
-                    const data = this.pathSpriteMap[key];
-                    const sprite = data.sprite;
-                    const pathInfo = data.pathInfo;
-                    
-                    if (activeSet.has(key)) {
-                        // Add bright glow effect to active spawning paths
-                        sprite.setTint(0xFFFF00); // Bright yellow glow
-                        sprite.setAlpha(1);
-                        sprite.setScale(this.gameScale * 1.1); // Slightly larger
-                    } else if (pathInfo && pathInfo.color) {
-                        // Normal path color
-                        const colorValue = typeof pathInfo.color === 'string' ? 
-                            parseInt(pathInfo.color.replace('0x', ''), 16) : 
-                            pathInfo.color;
-                        sprite.setTint(colorValue);
-                        sprite.setAlpha(0.9);
-                        sprite.setScale(this.gameScale);
-                    } else {
-                        // Default gray if no color info
-                        sprite.setTint(0x808080);
-                        sprite.setAlpha(0.8);
-                        sprite.setScale(this.gameScale);
-                    }
-                }
-            } else {
-                // No active paths - just show normal colors
-                for (const key in this.pathSpriteMap) {
-                    const data = this.pathSpriteMap[key];
-                    const sprite = data.sprite;
-                    const pathInfo = data.pathInfo;
-                    
-                    if (pathInfo && pathInfo.color) {
-                        const colorValue = typeof pathInfo.color === 'string' ? 
-                            parseInt(pathInfo.color.replace('0x', ''), 16) : 
-                            pathInfo.color;
-                        sprite.setTint(colorValue);
-                        sprite.setAlpha(0.9);
-                    } else {
-                        sprite.setTint(0x808080);
-                        sprite.setAlpha(0.8);
-                    }
-                }
-            }
-        }
-
-        // Draw pit
-        if (this.pitGraphics) {
-            this.pitGraphics.clear();
-            this.pitGraphics.fillStyle(0xadd8e6);
-            this.pitGraphics.lineStyle(2, 0xffffff);
-            this.pitGraphics.fillRect(shift.map.pit.x * this.cellSize, shift.map.pit.y * this.cellSize, shift.map.pit.width * this.cellSize, shift.map.pit.height * this.cellSize);
-            this.pitGraphics.strokeRect(shift.map.pit.x * this.cellSize, shift.map.pit.y * this.cellSize, shift.map.pit.width * this.cellSize, shift.map.pit.height * this.cellSize);
         }
 
         // Update players
@@ -1081,9 +1315,67 @@ class GameScene extends Phaser.Scene {
         }
         shift.enemies.forEach(e => {
             if (!this.enemySprites[e.id]) {
-                // Create enemy container based on grid size
-                const spriteWidth = (e.gridWidth || 1) * this.cellSize;
-                const spriteHeight = (e.gridHeight || 1) * this.cellSize;
+                // Create enemy container based on grid size with scaling
+                // 3x3 -> 0.75, 2x2 -> 0.5, 1x1 -> 0.25 (unless boss/miniboss = 1.0)
+                const gridSize = e.gridWidth || 1;
+                let sizeMultiplier;
+                const isBossType = e.rarity && (e.rarity.toLowerCase().includes('boss') || e.rarity.toLowerCase() === 'legendary');
+                if (isBossType) {
+                    sizeMultiplier = 1.0; // Full cell size for bosses
+                } else if (gridSize >= 3) {
+                    sizeMultiplier = 0.75;
+                } else if (gridSize === 2) {
+                    sizeMultiplier = 0.5;
+                } else {
+                    sizeMultiplier = 0.25;
+                }
+                
+                const spriteWidth = this.cellSize * sizeMultiplier;
+                const spriteHeight = this.cellSize * sizeMultiplier;
+                
+                // Determine z-index based on path and position along path
+                let wasteDepth = 5;
+                if (e.pathIndex !== undefined && e.pathId !== undefined && shift.map?.corePaths?.[e.pathId]) {
+                    const path = shift.map.corePaths[e.pathId];
+                    // Determine base z-index (use parent path for branches)
+                    let basePathIndex = path.isMainPath ? e.pathId : (path.parentPath ?? e.pathId);
+                    
+                    // For branches after merge point, calculate as if on parent path
+                    let effectiveIndex = e.pathIndex;
+                    let effectivePathLength = path.squares.length;
+                    let isMergedSection = false;
+                    if (!path.isMainPath && path.branchMergeIndex !== undefined && e.pathIndex >= path.branchMergeIndex) {
+                        const parentPath = shift.map.corePaths[path.parentPath];
+                        if (parentPath) {
+                            const segmentsFromMerge = e.pathIndex - path.branchMergeIndex;
+                            const parentMergePoint = parentPath.squares.length - (path.squares.length - path.branchMergeIndex);
+                            effectiveIndex = parentMergePoint + segmentsFromMerge;
+                            effectivePathLength = parentPath.squares.length; // Use parent length for scaling
+                            isMergedSection = true;
+                        }
+                    }
+                    
+                    // Calculate depth using same formula as path segments (inverted)
+                    // Earlier positions have HIGHER z-index, later positions have LOWER
+                    wasteDepth = basePathIndex - (effectiveIndex / (effectivePathLength * 2)) - 0.49;
+                    
+                    // Debug log periodically (every 60 frames = ~1 second)
+                    if (!this._wasteDepthLogFrame) this._wasteDepthLogFrame = 0;
+                    this._wasteDepthLogFrame++;
+                    if (this._wasteDepthLogFrame % 60 === 0 && !path.isMainPath) {
+                        console.log(`Branch waste: pathId=${e.pathId}, idx=${e.pathIndex}, mergeIdx=${path.branchMergeIndex}, merged=${isMergedSection}, baseIdx=${basePathIndex}, effIdx=${effectiveIndex}, depth=${wasteDepth.toFixed(3)}`);
+                    }
+                } else if (shift.map?.corePaths) {
+                    // Fallback: find which path this enemy is on by position
+                    for (let i = 0; i < shift.map.corePaths.length; i++) {
+                        const path = shift.map.corePaths[i];
+                        const foundIdx = path.squares.findIndex(sq => Math.abs(sq.x - Math.round(e.x / 10)) < 1 && Math.abs(sq.y - Math.round(e.y / 10)) < 1);
+                        if (foundIdx >= 0) {
+                            wasteDepth = i - (foundIdx / (path.squares.length * 2)) - 0.49;
+                            break;
+                        }
+                    }
+                }
                 
                 // Create background rectangle with rarity color
                 const bgRect = this.add.rectangle(
@@ -1093,18 +1385,21 @@ class GameScene extends Phaser.Scene {
                     spriteHeight, 
                     e.rarityColor || 0xff0000
                 );
-                bgRect.setDepth(5);
+                bgRect.setDepth(wasteDepth);
                 bgRect.setAlpha(0.8);
                 
                 // Create small sprite in center (30% of total size)
                 const smallSpriteSize = Math.min(spriteWidth, spriteHeight) * 0.3;
                 let enemy = this.add.sprite(e.x * this.gameScale, e.y * this.gameScale, 'waste-01');
                 enemy.setDisplaySize(smallSpriteSize, smallSpriteSize);
-                enemy.setDepth(5.5);
+                enemy.setDepth(wasteDepth + 0.01);
                 if (this.enemies) this.enemies.add(enemy);
                 
                 // Store background reference
                 enemy.bgRect = bgRect;
+                
+                // Make background interactive for hover (entire waste area)
+                bgRect.setInteractive();
                 
                 // Add HP bar background
                 enemy.hpBarBg = this.add.rectangle(
@@ -1114,7 +1409,7 @@ class GameScene extends Phaser.Scene {
                     3, 
                     0x000000
                 );
-                enemy.hpBarBg.setDepth(6);
+                enemy.hpBarBg.setDepth(wasteDepth + 0.02);
                 
                 // Add HP bar
                 enemy.hpBar = this.add.rectangle(
@@ -1124,54 +1419,157 @@ class GameScene extends Phaser.Scene {
                     3, 
                     0x00FF00
                 );
-                enemy.hpBar.setDepth(7);
+                enemy.hpBar.setDepth(wasteDepth + 0.03);
                 
-                // Add name text
+                // Add name text with crisp rendering (hidden by default, shown on hover)
                 enemy.nameText = this.add.text(
                     e.x * this.gameScale, 
                     e.y * this.gameScale + spriteHeight/2 + 5, 
                     e.name || 'Waste',
                     {
-                        fontSize: '8px',
+                        fontSize: '12px',
+                        fontFamily: 'Arial, sans-serif',
                         color: '#' + (e.rarityColor || 0xFFFFFF).toString(16).padStart(6, '0'),
                         stroke: '#000000',
-                        strokeThickness: 2
+                        strokeThickness: 3,
+                        resolution: 2 // Higher resolution for crisp text
                     }
-                ).setOrigin(0.5, 0).setDepth(8);
+                ).setOrigin(0.5, 0).setDepth(wasteDepth + 0.04);
+                enemy.nameText.setScale(0.8); // Scale down slightly after rendering at high res
+                enemy.nameText.setVisible(false); // Hidden by default
+                
+                // Add hover events to background rect (entire waste area)
+                bgRect.on('pointerover', () => {
+                    if (enemy.nameText) enemy.nameText.setVisible(true);
+                });
+                bgRect.on('pointerout', () => {
+                    if (enemy.nameText) enemy.nameText.setVisible(false);
+                });
                 
                 this.enemySprites[e.id] = enemy;
             } else {
                 const enemy = this.enemySprites[e.id];
-                const spriteWidth = (e.gridWidth || 1) * this.cellSize;
-                const spriteHeight = (e.gridHeight || 1) * this.cellSize;
-                
-                // Update position for both sprite and background
-                enemy.x = e.x * this.gameScale;
-                enemy.y = e.y * this.gameScale;
-                if (enemy.bgRect) {
-                    enemy.bgRect.x = e.x * this.gameScale;
-                    enemy.bgRect.y = e.y * this.gameScale;
+                // Apply same size scaling as creation
+                const gridSize = e.gridWidth || 1;
+                let sizeMultiplier;
+                const isBossType = e.rarity && (e.rarity.toLowerCase().includes('boss') || e.rarity.toLowerCase() === 'legendary');
+                if (isBossType) {
+                    sizeMultiplier = 1.0;
+                } else if (gridSize >= 3) {
+                    sizeMultiplier = 0.75;
+                } else if (gridSize === 2) {
+                    sizeMultiplier = 0.5;
+                } else {
+                    sizeMultiplier = 0.25;
                 }
                 
-                // Update HP bar
-                const hpPercent = (e.health || e.hp) / (e.maxHP || e.health || 1);
-                enemy.hpBar.x = e.x * this.gameScale;
-                enemy.hpBar.y = e.y * this.gameScale - spriteHeight/2 - 5;
-                enemy.hpBar.scaleX = hpPercent;
-                enemy.hpBar.setFillStyle(hpPercent > 0.5 ? 0x00FF00 : hpPercent > 0.25 ? 0xFFAA00 : 0xFF0000);
-                enemy.hpBarBg.x = e.x * this.gameScale;
-                enemy.hpBarBg.y = e.y * this.gameScale - spriteHeight/2 - 5;
+                const spriteWidth = this.cellSize * sizeMultiplier;
+                const spriteHeight = this.cellSize * sizeMultiplier;
                 
-                // Update name
-                enemy.nameText.setPosition(e.x * this.gameScale, e.y * this.gameScale + spriteHeight/2 + 5);
-                
-                // Add special ability glow
-                if (e.specialAbility && !enemy.abilityGlow) {
-                    enemy.abilityGlow = this.add.circle(e.x * this.gameScale, e.y * this.gameScale, spriteWidth * 0.6, 0xFFFFFF, 0.3);
-                    enemy.abilityGlow.setDepth(4);
-                }
-                if (enemy.abilityGlow) {
-                    enemy.abilityGlow.setPosition(e.x * this.gameScale, e.y * this.gameScale);
+                // Check if we need to tween teleport (deadlock breaker)
+                if (e.teleportTarget && !enemy.isTweening) {
+                    enemy.isTweening = true;
+                    const targetX = e.teleportTarget.x * this.gameScale;
+                    const targetY = e.teleportTarget.y * this.gameScale;
+                    
+                    // Quick tween animation (200ms)
+                    this.tweens.add({
+                        targets: [enemy, enemy.bgRect],
+                        x: targetX,
+                        y: targetY,
+                        duration: 200,
+                        ease: 'Power2',
+                        onUpdate: () => {
+                            // Update HP bars and text to follow during tween
+                            if (enemy.hpBar) {
+                                enemy.hpBar.x = enemy.x;
+                                enemy.hpBar.y = enemy.y - spriteHeight/2 - 5;
+                            }
+                            if (enemy.hpBarBg) {
+                                enemy.hpBarBg.x = enemy.x;
+                                enemy.hpBarBg.y = enemy.y - spriteHeight/2 - 5;
+                            }
+                            if (enemy.nameText) {
+                                enemy.nameText.setPosition(enemy.x, enemy.y + spriteHeight/2 + 5);
+                            }
+                            if (enemy.abilityGlow) {
+                                enemy.abilityGlow.setPosition(enemy.x, enemy.y);
+                            }
+                        },
+                        onComplete: () => {
+                            enemy.isTweening = false;
+                        }
+                    });
+                    
+                    // Clear the teleport flag on server (handled in next update)
+                    delete e.teleportTarget;
+                } else if (!enemy.isTweening) {
+                    // Normal position update (smooth interpolation)
+                    enemy.x = e.x * this.gameScale;
+                    enemy.y = e.y * this.gameScale;
+                    if (enemy.bgRect) {
+                        enemy.bgRect.x = e.x * this.gameScale;
+                        enemy.bgRect.y = e.y * this.gameScale;
+                    }
+                    
+                    // Update z-index based on current path position
+                    let wasteDepth = 5;
+                    if (e.pathIndex !== undefined && e.pathId !== undefined && shift.map?.corePaths?.[e.pathId]) {
+                        const path = shift.map.corePaths[e.pathId];
+                        // Determine base z-index (use parent path for branches)
+                        let basePathIndex = path.isMainPath ? e.pathId : (path.parentPath ?? e.pathId);
+                        
+                        // For branches after merge point, calculate as if on parent path
+                        let effectiveIndex = e.pathIndex;
+                        let effectivePathLength = path.squares.length;
+                        if (!path.isMainPath && path.branchMergeIndex !== undefined && e.pathIndex >= path.branchMergeIndex) {
+                            const parentPath = shift.map.corePaths[path.parentPath];
+                            if (parentPath) {
+                                const segmentsFromMerge = e.pathIndex - path.branchMergeIndex;
+                                const parentMergePoint = parentPath.squares.length - (path.squares.length - path.branchMergeIndex);
+                                effectiveIndex = parentMergePoint + segmentsFromMerge;
+                                effectivePathLength = parentPath.squares.length;
+                            }
+                        }
+                        
+                        wasteDepth = basePathIndex - (effectiveIndex / (effectivePathLength * 2)) - 0.49;
+                    } else if (shift.map?.corePaths) {
+                        // Fallback: find by position
+                        for (let i = 0; i < shift.map.corePaths.length; i++) {
+                            const path = shift.map.corePaths[i];
+                            const foundIdx = path.squares.findIndex(sq => Math.abs(sq.x - Math.round(e.x / 10)) < 1 && Math.abs(sq.y - Math.round(e.y / 10)) < 1);
+                            if (foundIdx >= 0) {
+                                wasteDepth = i - (foundIdx / (path.squares.length * 2)) - 0.49;
+                                break;
+                            }
+                        }
+                    }
+                    enemy.setDepth(wasteDepth + 0.01);
+                    if (enemy.bgRect) enemy.bgRect.setDepth(wasteDepth);
+                    if (enemy.hpBar) enemy.hpBar.setDepth(wasteDepth + 0.03);
+                    if (enemy.hpBarBg) enemy.hpBarBg.setDepth(wasteDepth + 0.02);
+                    if (enemy.nameText) enemy.nameText.setDepth(wasteDepth + 0.04);
+                    
+                    // Update HP bar
+                    const hpPercent = (e.health || e.hp) / (e.maxHP || e.health || 1);
+                    enemy.hpBar.x = e.x * this.gameScale;
+                    enemy.hpBar.y = e.y * this.gameScale - spriteHeight/2 - 5;
+                    enemy.hpBar.scaleX = hpPercent;
+                    enemy.hpBar.setFillStyle(hpPercent > 0.5 ? 0x00FF00 : hpPercent > 0.25 ? 0xFFAA00 : 0xFF0000);
+                    enemy.hpBarBg.x = e.x * this.gameScale;
+                    enemy.hpBarBg.y = e.y * this.gameScale - spriteHeight/2 - 5;
+                    
+                    // Update name
+                    enemy.nameText.setPosition(e.x * this.gameScale, e.y * this.gameScale + spriteHeight/2 + 5);
+                    
+                    // Add special ability glow
+                    if (e.specialAbility && !enemy.abilityGlow) {
+                        enemy.abilityGlow = this.add.circle(e.x * this.gameScale, e.y * this.gameScale, spriteWidth * 0.6, 0xFFFFFF, 0.3);
+                        enemy.abilityGlow.setDepth(4);
+                    }
+                    if (enemy.abilityGlow) {
+                        enemy.abilityGlow.setPosition(e.x * this.gameScale, e.y * this.gameScale);
+                    }
                 }
             }
         });
@@ -1209,6 +1607,30 @@ class GameScene extends Phaser.Scene {
                 // Update alpha if needed
                 let alpha = w.hp / w.stats.hp;
                 this.weaponSprites[w.id].setAlpha(alpha);
+                
+                // Rotate pressure washer to face nearest enemy
+                if (w.type === 'pressure-washer') {
+                    const weapon = this.weaponSprites[w.id];
+                    // Find nearest enemy in range
+                    let nearestEnemy = null;
+                    let nearestDist = Infinity;
+                    shift.enemies.forEach(e => {
+                        const dx = e.x - w.x;
+                        const dy = e.y - w.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < nearestDist && dist <= w.stats.range) {
+                            nearestDist = dist;
+                            nearestEnemy = e;
+                        }
+                    });
+                    
+                    if (nearestEnemy) {
+                        const dx = nearestEnemy.x - w.x;
+                        const dy = nearestEnemy.y - w.y;
+                        const angle = Math.atan2(dy, dx);
+                        weapon.setRotation(angle + Math.PI / 2); // Add 90 degrees since sprite faces up
+                    }
+                }
             }
         });
 
@@ -1220,19 +1642,47 @@ class GameScene extends Phaser.Scene {
         if (!this.projectileSprites) this.projectileSprites = {};
         for (let id in this.projectileSprites) {
             if (!currentProjectileIds.has(id)) {
-                this.projectileSprites[id].destroy();
+                const projectileData = this.projectileSprites[id];
+                if (projectileData.sprite) projectileData.sprite.destroy();
+                if (projectileData.emitter) projectileData.emitter.destroy();
                 delete this.projectileSprites[id];
             }
         }
         shift.projectiles.forEach(p => {
             if (!this.projectileSprites[p.id]) {
-                let proj = this.add.circle(p.x * this.gameScale, p.y * this.gameScale, 3 * this.gameScale, 0xff0000);
+                let proj, emitter;
+                if (p.weaponType === 'pressure-washer') {
+                    // Water projectile - transparent blue
+                    proj = this.add.circle(p.x * this.gameScale, p.y * this.gameScale, 4 * this.gameScale, 0x0088ff);
+                    proj.setAlpha(0.6);
+                    
+                    // Create particle emitter for water splash if texture exists
+                    if (this.textures.exists('particle')) {
+                        emitter = this.add.particles(p.x * this.gameScale, p.y * this.gameScale, 'particle', {
+                            speed: { min: 10, max: 30 },
+                            scale: { start: 0.3, end: 0 },
+                            alpha: { start: 0.6, end: 0 },
+                            tint: 0x0088ff,
+                            lifespan: 200,
+                            frequency: 50,
+                            quantity: 2
+                        });
+                        emitter.setDepth(2);
+                    }
+                } else {
+                    // Regular projectile - red
+                    proj = this.add.circle(p.x * this.gameScale, p.y * this.gameScale, 3 * this.gameScale, 0xff0000);
+                }
                 proj.setDepth(2); // Projectiles above everything
                 if (this.projectiles) this.projectiles.add(proj);
-                this.projectileSprites[p.id] = proj;
+                this.projectileSprites[p.id] = { sprite: proj, emitter: emitter };
             } else {
-                this.projectileSprites[p.id].x = p.x * this.gameScale;
-                this.projectileSprites[p.id].y = p.y * this.gameScale;
+                const projectileData = this.projectileSprites[p.id];
+                projectileData.sprite.x = p.x * this.gameScale;
+                projectileData.sprite.y = p.y * this.gameScale;
+                if (projectileData.emitter) {
+                    projectileData.emitter.setPosition(p.x * this.gameScale, p.y * this.gameScale);
+                }
             }
         });
 
@@ -1334,7 +1784,25 @@ class GameScene extends Phaser.Scene {
                     let wy = Math.floor(pos.y / 10) - Math.floor(wGridH / 2);
                     return !(gx + gridW <= wx || wx + wGridW <= gx || gy + gridH <= wy || wy + wGridH <= gy);
                 });
-                if (!occupied) {
+                
+                // Check if placing on player avatar
+                let placingOnPlayer = false;
+                if (this.player) {
+                    const playerGridX = Math.floor(this.player.x / this.cellSize);
+                    const playerGridY = Math.floor(this.player.y / this.cellSize);
+                    // Check if any part of the weapon grid overlaps with player
+                    for (let i = 0; i < gridW; i++) {
+                        for (let j = 0; j < gridH; j++) {
+                            if (gx + i === playerGridX && gy + j === playerGridY) {
+                                placingOnPlayer = true;
+                                break;
+                            }
+                        }
+                        if (placingOnPlayer) break;
+                    }
+                }
+                
+                if (!occupied && !placingOnPlayer) {
                     socket.emit('place-weapon', { shiftId: currentShiftId, x, y, type: selectedItem.type, rarity: selectedItem.rarity, userId: currentUser._id });
                 }
             }
